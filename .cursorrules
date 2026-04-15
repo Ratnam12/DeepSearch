@@ -1,0 +1,61 @@
+# DeepSearch — Cursor AI Rules
+# These rules are enforced on every file the AI touches in this project.
+
+## Language & runtime
+- This is a Python 3.11+ project. Use 3.11+ syntax freely (e.g. `X | Y` unions, `match` statements).
+- All I/O — HTTP calls, DB queries, cache reads/writes — MUST use async/await.
+  Never use synchronous equivalents (`requests`, `redis.Redis`, `qdrant_client.QdrantClient`) in the hot path.
+
+## Type hints
+- Every function and method MUST have fully annotated parameter types and a return type.
+- Use built-in generics (`list[str]`, `dict[str, Any]`) not `typing.List`, `typing.Dict`.
+- Use `X | None` instead of `Optional[X]`.
+- `Any` is allowed only when the shape is genuinely unknown (e.g. raw JSON payloads).
+
+## Function length
+- Functions MUST NOT exceed 40 lines of executable code (blank lines and comments excluded).
+- If a function is growing beyond 40 lines, extract a private helper (prefix name with `_`).
+
+## No hardcoded values
+- API keys, URLs, model names, numeric thresholds — EVERYTHING lives in `backend/config.py`.
+- Import with `from backend.config import get_settings` and call `get_settings()` at the top of the function or `__init__`.
+- String literals for prompts are the only exception and must live in the module that owns them (e.g. `llm.py`).
+
+## Single responsibility
+- Each file has exactly one job. The file's docstring MUST state that job in one sentence.
+  | File | Responsibility |
+  |---|---|
+  | config.py | Load and expose all settings from .env |
+  | main.py | Build and configure the ASGI app |
+  | router.py | Declare HTTP endpoints |
+  | security.py | Authenticate inbound requests |
+  | agent.py | Orchestrate the full search pipeline |
+  | scraper.py | Fetch raw text from the web |
+  | chunker.py | Split documents into overlapping chunks |
+  | embedder.py | Convert text to vectors via OpenAI |
+  | retriever.py | Upsert and query Qdrant |
+  | cache.py | Semantic cache via Redis |
+  | llm.py | Synthesise answers via OpenRouter |
+
+## Error handling
+- Never swallow exceptions silently with a bare `except: pass`.
+- Use `except SomeSpecificError as exc:` and either re-raise, log, or convert to an HTTP error.
+- HTTP errors from external APIs must surface as `httpx.HTTPStatusError` and be caught at the agent layer.
+
+## Imports
+- Absolute imports only: `from backend.config import get_settings`, not `from .config import ...`.
+- Standard library first, third-party second, local (`backend.*`) last, separated by blank lines.
+
+## Comments
+- Do NOT add comments that restate what the code does ("# loop over chunks", "# return result").
+- DO add comments that explain WHY a non-obvious decision was made.
+
+## Tests
+- Every new public function should have at least one test in `tests/`.
+- Tests are async where the function under test is async (`@pytest.mark.asyncio`).
+- Use `pytest.mark.parametrize` for data-driven cases.
+
+## Dependency injection
+- Pass dependencies (clients, settings) as constructor arguments or FastAPI `Depends()`.
+- Do NOT instantiate `AsyncOpenAI`, `AsyncQdrantClient`, or `aioredis` at module level —
+  always inside a function or `__init__` so tests can patch them.

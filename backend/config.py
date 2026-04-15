@@ -1,0 +1,51 @@
+"""
+Central configuration loaded from .env via pydantic-settings.
+Every other module imports from here — no hardcoded values anywhere else.
+"""
+
+from functools import lru_cache
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+    )
+
+    # ── API credentials ────────────────────────────────────────────────────
+    openrouter_api_key: str
+    openai_api_key: str          # text-embedding-3-small only (not on OpenRouter)
+    serper_api_key: str
+
+    # ── Service URLs ───────────────────────────────────────────────────────
+    qdrant_url: str = Field(default="http://localhost:6333")
+    qdrant_api_key: str = Field(default="")
+    redis_url: str = Field(default="redis://localhost:6379")
+
+    # ── OpenRouter config ──────────────────────────────────────────────────
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    pro_model: str = "google/gemini-2.5-pro-preview"
+    flash_model: str = "google/gemini-2.5-flash-preview"
+
+    # ── Chunking ───────────────────────────────────────────────────────────
+    chunk_size: int = 1500
+    chunk_overlap: int = 200
+
+    # ── Retrieval ──────────────────────────────────────────────────────────
+    top_k_retrieval: int = 25
+    top_k_final: int = 5
+    confidence_threshold: float = 0.65
+
+    # ── Semantic cache ─────────────────────────────────────────────────────
+    cache_similarity_threshold: float = 0.95
+    cache_ttl_seconds: int = 3600
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    """Return a singleton Settings instance (parsed once, cached forever)."""
+    return Settings()

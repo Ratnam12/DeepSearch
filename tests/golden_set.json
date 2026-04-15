@@ -1,0 +1,37 @@
+[
+  {
+    "id": "gs_001",
+    "query": "What is retrieval-augmented generation?",
+    "ground_truth": "Retrieval-Augmented Generation (RAG) is a technique that combines a retrieval system with a generative language model. The retrieval component fetches relevant documents from a knowledge base, which are then provided as context to the generator so it can produce accurate, grounded answers rather than relying solely on its parametric memory.",
+    "expected_sources_contain": ["arxiv.org", "wikipedia.org"],
+    "min_confidence": 0.65
+  },
+  {
+    "id": "gs_002",
+    "query": "How does cosine similarity work in vector search?",
+    "ground_truth": "Cosine similarity measures the angle between two vectors in a high-dimensional space. It returns 1 for identical directions and 0 for perpendicular vectors. In vector search, document embeddings are stored and a query embedding is compared against them using this metric to rank results by semantic relevance.",
+    "expected_sources_contain": [],
+    "min_confidence": 0.65
+  },
+  {
+    "id": "gs_003",
+    "query": "What are the main differences between BM25 and dense retrieval?",
+    "ground_truth": "BM25 is a sparse, keyword-based retrieval algorithm that scores documents by term frequency and inverse document frequency. Dense retrieval uses neural embeddings to match documents by semantic meaning. Dense retrieval generalises better to paraphrase queries; BM25 is more precise for exact term matches and requires no GPU.",
+    "expected_sources_contain": [],
+    "min_confidence": 0.65
+  },
+  {
+    "id": "gs_004",
+    "query": "What is the purpose of chunk overlap in text splitting?",
+    "ground_truth": "Chunk overlap ensures that relevant context is not lost at chunk boundaries. When a sentence or paragraph spans two adjacent chunks, overlap guarantees that at least one chunk contains the complete thought, improving retrieval recall.",
+    "expected_sources_contain": [],
+    "min_confidence": 0.65
+  },
+  {
+    "id": "gs_005",
+    "query": "How does semantic caching reduce LLM API costs?",
+    "ground_truth": "Semantic caching stores previous query embeddings alongside their answers. When a new query arrives, its embedding is compared to cached ones using cosine similarity. If the similarity exceeds a threshold, the cached answer is returned immediately, skipping both the retrieval and generation steps and therefore avoiding API charges.",
+    "expected_sources_contain": [],
+    "min_confidence": 0.65
+  }
+]
