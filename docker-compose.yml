@@ -9,7 +9,7 @@ services:
       - "6333:6333"   # HTTP / REST + gRPC
       - "6334:6334"   # gRPC (alternative)
     volumes:
-      - qdrant_storage:/qdrant/storage
+      - ./qdrant_storage:/qdrant/storage
     restart: unless-stopped
 
   # ── Semantic cache ───────────────────────────────────────────────────────
@@ -18,7 +18,7 @@ services:
     container_name: deepsearch_redis
     ports:
       - "6379:6379"
-    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
     volumes:
       - redis_data:/data
     restart: unless-stopped
@@ -48,5 +48,5 @@ services:
     command: ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
 volumes:
-  qdrant_storage:
+  
   redis_data:
