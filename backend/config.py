@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     pro_model: str = "google/gemini-2.5-pro-preview"
     flash_model: str = "google/gemini-2.5-flash-preview"
 
+    # ── Embeddings ─────────────────────────────────────────────────────────
+    embedding_model: str = "text-embedding-3-small"
+    embed_max_chars: int = 8191
+
     # ── Chunking ───────────────────────────────────────────────────────────
     chunk_size: int = 1500
     chunk_overlap: int = 200

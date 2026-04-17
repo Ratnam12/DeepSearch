@@ -11,7 +11,7 @@ from typing import Any
 from backend.cache import SemanticCache
 from backend.chunker import chunk_documents
 from backend.config import get_settings
-from backend.embedder import embed_query
+from backend.embedder import embed, embed_batch
 from backend.retriever import retrieve_chunks
 from backend.scraper import scrape_urls
 from backend.llm import synthesise_answer
@@ -35,7 +35,7 @@ class DeepSearchAgent:
             if cached:
                 return {**cached, "cached": True}
 
-        query_embedding = await embed_query(query)
+        query_embedding = await embed(query)
         chunks = await retrieve_chunks(query_embedding)
 
         if not chunks:
@@ -71,7 +71,8 @@ class DeepSearchAgent:
 
     async def _store_chunks(self, chunks: list[dict[str, Any]]) -> None:
         """Embed and upsert chunks into Qdrant."""
-        from backend.embedder import embed_chunks
         from backend.retriever import upsert_chunks
-        embedded = await embed_chunks(chunks)
-        await upsert_chunks(embedded)
+        embeddings = await embed_batch([c["text"] for c in chunks])
+        for chunk, vector in zip(chunks, embeddings):
+            chunk["embedding"] = vector
+        await upsert_chunks(chunks)
