@@ -40,7 +40,12 @@ class DeepSearchAgent:
 
         if not chunks:
             urls = await self._fetch_fresh_urls(query)
-            raw_docs = await scrape_urls(urls)
+            texts = await scrape_urls(urls)
+            raw_docs = [
+                {"url": url, "text": text}
+                for url, text in zip(urls, texts)
+                if text
+            ]
             new_chunks = chunk_documents(raw_docs)
             await self._store_chunks(new_chunks)
             chunks = await retrieve_chunks(query_embedding)

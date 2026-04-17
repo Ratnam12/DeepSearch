@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     cache_similarity_threshold: float = 0.95
     cache_ttl_seconds: int = 3600
 
+    # ── Scraper ────────────────────────────────────────────────────────────
+    scrape_timeout_seconds: int = 15
+    scrape_concurrency: int = 3
+    scrape_min_line_length: int = 50
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
