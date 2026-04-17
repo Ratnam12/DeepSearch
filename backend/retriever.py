@@ -47,7 +47,7 @@ async def upsert_chunks(chunks: list[dict[str, Any]]) -> None:
         PointStruct(
             id=str(uuid4()),
             vector=chunk["embedding"],
-            payload={"text": chunk["text"], "url": chunk["url"]},
+            payload={"text": chunk["text"], "source_url": chunk["source_url"]},
         )
         for chunk in chunks
         if "embedding" in chunk
@@ -72,6 +72,10 @@ async def retrieve_chunks(
     )
 
     return [
-        {"text": hit.payload["text"], "url": hit.payload["url"], "score": hit.score}
+        {
+            "text": hit.payload["text"],
+            "source_url": hit.payload["source_url"],
+            "score": hit.score,
+        }
         for hit in results
     ]

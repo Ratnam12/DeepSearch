@@ -1,60 +1,59 @@
-"""
-Text chunking utilities.
+"""Text chunking utilities.
 Single responsibility: split raw document text into overlapping chunks
 suitable for embedding and retrieval.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
+
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from backend.config import get_settings
 
+# Separator priority: paragraph → line → sentence → word → character.
+_SEPARATORS = ["\n\n", "\n", ". ", " ", ""]
 
-def chunk_documents(documents: list[dict[str, str]]) -> list[dict[str, Any]]:
-    """
-    Split each document's text into overlapping windows.
 
-    Returns a flat list of chunk dicts:
-        {"text": str, "url": str, "chunk_index": int}
+def chunk_text(
+    text: str,
+    source_url: str,
+    title: str = "",
+) -> list[dict[str, Any]]:
+    """Split `text` into overlapping chunks and return enriched metadata dicts.
+
+    Each dict contains: text, source_url, title, chunk_index, total_chunks,
+    scraped_at. Chunks under chunk_min_length characters are dropped.
     """
     settings = get_settings()
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=settings.chunk_size,
+        chunk_overlap=settings.chunk_overlap,
+        separators=_SEPARATORS,
+    )
+    raw_chunks = splitter.split_text(text)
+    valid = [c.strip() for c in raw_chunks if len(c.strip()) >= settings.chunk_min_length]
+
+    scraped_at = datetime.now(timezone.utc).isoformat()
+    total = len(valid)
+
+    return [
+        {
+            "text": chunk,
+            "source_url": source_url,
+            "title": title,
+            "chunk_index": idx,
+            "total_chunks": total,
+            "scraped_at": scraped_at,
+        }
+        for idx, chunk in enumerate(valid)
+    ]
+
+
+def chunk_documents(documents: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """Adapter: chunk a list of {url, text} dicts using chunk_text."""
     all_chunks: list[dict[str, Any]] = []
-
     for doc in documents:
-        chunks = _split_text(
-            text=doc["text"],
-            chunk_size=settings.chunk_size,
-            overlap=settings.chunk_overlap,
-        )
-        for idx, chunk in enumerate(chunks):
-            all_chunks.append({
-                "text": chunk,
-                "url": doc["url"],
-                "chunk_index": idx,
-            })
-
+        all_chunks.extend(chunk_text(doc["text"], source_url=doc["url"]))
     return all_chunks
-
-
-def _split_text(text: str, chunk_size: int, overlap: int) -> list[str]:
-    """
-    Slide a window of `chunk_size` characters across `text`,
-    stepping forward by (chunk_size - overlap) each time.
-    Strips empty chunks.
-    """
-    step = chunk_size - overlap
-    if step <= 0:
-        raise ValueError("chunk_size must be greater than chunk_overlap")
-
-    chunks: list[str] = []
-    start = 0
-
-    while start < len(text):
-        end = start + chunk_size
-        chunk = text[start:end].strip()
-        if chunk:
-            chunks.append(chunk)
-        start += step
-
-    return chunks

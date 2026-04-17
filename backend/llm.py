@@ -20,7 +20,7 @@ def _get_client() -> AsyncOpenAI:
 
 def _build_prompt(query: str, chunks: list[dict]) -> str:
     context_blocks = "\n\n---\n\n".join(
-        f"Source: {c['url']}\n{c['text']}" for c in chunks
+        f"Source: {c['source_url']}\n{c['text']}" for c in chunks
     )
     return (
         f"You are a precise research assistant. "
@@ -57,7 +57,7 @@ async def synthesise_answer(
     )
 
     answer = response.choices[0].message.content or ""
-    sources = list({c["url"] for c in chunks})
+    sources = list({c["source_url"] for c in chunks})
 
     try:
         top_lp = response.choices[0].logprobs.content[0].top_logprobs[0].logprob

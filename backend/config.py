@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     # ── Chunking ───────────────────────────────────────────────────────────
     chunk_size: int = 1500
     chunk_overlap: int = 200
+    chunk_min_length: int = 80
 
     # ── Retrieval ──────────────────────────────────────────────────────────
     top_k_retrieval: int = 25
