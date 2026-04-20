@@ -13,14 +13,17 @@ from uuid import uuid4
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
     Distance,
+    Fusion,
+    FusionQuery,
     PointStruct,
+    Prefetch,
     SparseVector,
     SparseVectorParams,
     VectorParams,
 )
 
 from backend.config import get_settings
-from backend.embedder import embed_batch
+from backend.embedder import embed, embed_batch
 
 _COLLECTION = "deepsearch"
 _VECTOR_SIZE = 1536   # text-embedding-3-small output dimension
@@ -132,4 +135,50 @@ async def retrieve_chunks(
             "score": hit.score,
         }
         for hit in results
+    ]
+
+
+async def hybrid_search(query: str) -> list[dict[str, Any]]:
+    """Retrieve chunks via hybrid dense + sparse search with RRF fusion.
+
+    Two ``Prefetch`` legs run in parallel inside Qdrant:
+    - **dense**  — ANN over the ``dense`` vector space (semantic similarity).
+    - **sparse** — exact dot-product over the ``sparse`` vector space (lexical).
+
+    Qdrant merges the two candidate sets with Reciprocal Rank Fusion before
+    returning the final top-``top_k_final`` results.
+    """
+    settings = get_settings()
+    client = _get_client()
+
+    dense_vec = await embed(query)
+    sparse_vec = _build_sparse_vector(query)
+
+    response = await client.query_points(
+        collection_name=_COLLECTION,
+        prefetch=[
+            Prefetch(
+                query=dense_vec,
+                using="dense",
+                limit=settings.top_k_retrieval,
+            ),
+            Prefetch(
+                query=sparse_vec,
+                using="sparse",
+                limit=settings.top_k_retrieval,
+            ),
+        ],
+        query=FusionQuery(fusion=Fusion.RRF),
+        limit=settings.top_k_final,
+        with_payload=True,
+    )
+
+    return [
+        {
+            "text": hit.payload.get("text", ""),
+            "source_url": hit.payload.get("source_url", ""),
+            "title": hit.payload.get("title", ""),
+            "score": hit.score,
+        }
+        for hit in response.points
     ]
