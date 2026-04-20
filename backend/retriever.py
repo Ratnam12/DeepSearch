@@ -5,6 +5,7 @@ Single responsibility: upsert and query the vector store.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections import Counter
 from typing import Any
@@ -21,6 +22,7 @@ from qdrant_client.models import (
     SparseVectorParams,
     VectorParams,
 )
+from sentence_transformers import CrossEncoder
 
 from backend.config import get_settings
 from backend.embedder import embed, embed_batch
@@ -28,8 +30,17 @@ from backend.embedder import embed, embed_batch
 _COLLECTION = "deepsearch"
 _VECTOR_SIZE = 1536   # text-embedding-3-small output dimension
 _SPARSE_DIM = 65536   # hash space for sparse word-frequency vectors
+_RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 _client: AsyncQdrantClient | None = None
+_reranker: CrossEncoder | None = None
+
+
+def _get_reranker() -> CrossEncoder:
+    global _reranker
+    if _reranker is None:
+        _reranker = CrossEncoder(_RERANKER_MODEL)
+    return _reranker
 
 
 def _get_client() -> AsyncQdrantClient:
@@ -139,14 +150,16 @@ async def retrieve_chunks(
 
 
 async def hybrid_search(query: str) -> list[dict[str, Any]]:
-    """Retrieve chunks via hybrid dense + sparse search with RRF fusion.
+    """Retrieve chunks via hybrid dense + sparse search, then cross-encoder reranking.
 
-    Two ``Prefetch`` legs run in parallel inside Qdrant:
-    - **dense**  — ANN over the ``dense`` vector space (semantic similarity).
-    - **sparse** — exact dot-product over the ``sparse`` vector space (lexical).
-
-    Qdrant merges the two candidate sets with Reciprocal Rank Fusion before
-    returning the final top-``top_k_final`` results.
+    Pipeline:
+    1. Two ``Prefetch`` legs (dense ANN + sparse dot-product) run in parallel
+       inside Qdrant and are merged with Reciprocal Rank Fusion.  The fused
+       recall set is sized to ``top_k_retrieval`` so the reranker sees a wide
+       candidate pool.
+    2. The cross-encoder scores every (query, chunk) pair in one batch call
+       and the results are sorted by ``rerank_score`` descending.
+    3. Only the top ``top_k_final`` chunks are returned.
     """
     settings = get_settings()
     client = _get_client()
@@ -169,11 +182,11 @@ async def hybrid_search(query: str) -> list[dict[str, Any]]:
             ),
         ],
         query=FusionQuery(fusion=Fusion.RRF),
-        limit=settings.top_k_final,
+        limit=settings.top_k_retrieval,
         with_payload=True,
     )
 
-    return [
+    candidates = [
         {
             "text": hit.payload.get("text", ""),
             "source_url": hit.payload.get("source_url", ""),
@@ -182,3 +195,18 @@ async def hybrid_search(query: str) -> list[dict[str, Any]]:
         }
         for hit in response.points
     ]
+
+    if not candidates:
+        return []
+
+    reranker = _get_reranker()
+    pairs = [(query, c["text"]) for c in candidates]
+
+    # predict() is CPU-bound; offload to a thread to avoid blocking the loop.
+    rerank_scores: list[float] = await asyncio.to_thread(reranker.predict, pairs)
+
+    for chunk, rerank_score in zip(candidates, rerank_scores):
+        chunk["rerank_score"] = float(rerank_score)
+
+    candidates.sort(key=lambda c: c["rerank_score"], reverse=True)
+    return candidates[: settings.top_k_final]

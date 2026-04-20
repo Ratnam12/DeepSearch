@@ -1,6 +1,10 @@
 import asyncio
 from backend.retriever import upsert_chunks, hybrid_search
 from backend.config import get_settings
+import asyncio
+import time
+from backend.retriever import upsert_chunks, hybrid_search
+from backend.config import get_settings
 
 chunks = [
     {
@@ -42,5 +46,24 @@ async def main():
 
     assert len(results) == get_settings().top_k_final, f"Expected {get_settings().top_k_final} results, got {len(results)}"
     print(f"\n✓ Got {len(results)} results as expected")
+
+asyncio.run(main())
+
+
+
+
+async def main():
+    print("Running hybrid_search with reranker...")
+
+    start = time.perf_counter()
+    results = await hybrid_search("quantum entanglement")
+    elapsed = time.perf_counter() - start
+
+    for r in results:
+        print(f"Title: {r['title']} | Rerank Score: {r['rerank_score']:.4f}")
+
+    print(f"\nFirst result rerank_score: {results[0]['rerank_score']}")
+    print(f"Last result rerank_score: {results[-1]['rerank_score']}")
+    print(f"Time taken: {elapsed*1000:.1f}ms")
 
 asyncio.run(main())
