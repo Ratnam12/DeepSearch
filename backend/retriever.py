@@ -5,28 +5,48 @@ Single responsibility: upsert and query the vector store.
 
 from __future__ import annotations
 
+import re
+from collections import Counter
 from typing import Any
 from uuid import uuid4
 
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
+from qdrant_client.models import (
+    Distance,
+    PointStruct,
+    SparseVector,
+    SparseVectorParams,
+    VectorParams,
+)
 
 from backend.config import get_settings
+from backend.embedder import embed_batch
 
-_COLLECTION = "deepsearch_chunks"
-_VECTOR_SIZE = 1536  # text-embedding-3-small output dimension
+_COLLECTION = "deepsearch"
+_VECTOR_SIZE = 1536   # text-embedding-3-small output dimension
+_SPARSE_DIM = 65536   # hash space for sparse word-frequency vectors
+
+_client: AsyncQdrantClient | None = None
 
 
 def _get_client() -> AsyncQdrantClient:
-    settings = get_settings()
-    return AsyncQdrantClient(
-        url=settings.qdrant_url,
-        api_key=settings.qdrant_api_key or None,
-    )
+    global _client
+    if _client is None:
+        settings = get_settings()
+        _client = AsyncQdrantClient(
+            url=settings.qdrant_url,
+            api_key=settings.qdrant_api_key or None,
+        )
+    return _client
 
 
 async def ensure_collection() -> None:
-    """Create the Qdrant collection if it does not already exist."""
+    """Create the Qdrant collection if it does not already exist.
+
+    The collection uses two named vector spaces:
+    - ``dense``  — 1536-dim float vectors with cosine distance.
+    - ``sparse`` — sparse word-frequency vectors for hybrid search.
+    """
     client = _get_client()
     existing = await client.get_collections()
     names = [c.name for c in existing.collections]
@@ -34,27 +54,62 @@ async def ensure_collection() -> None:
     if _COLLECTION not in names:
         await client.create_collection(
             collection_name=_COLLECTION,
-            vectors_config=VectorParams(size=_VECTOR_SIZE, distance=Distance.COSINE),
+            vectors_config={
+                "dense": VectorParams(size=_VECTOR_SIZE, distance=Distance.COSINE),
+            },
+            sparse_vectors_config={
+                "sparse": SparseVectorParams(),
+            },
         )
 
 
+def _build_sparse_vector(text: str) -> SparseVector:
+    """Return a sparse vector built from word frequencies using hash bucketing.
+
+    Each unique word is bucketed via ``hash(word) % 65536``.  Collisions are
+    handled by accumulating frequencies into the same bucket index.
+    """
+    words = re.findall(r"\w+", text.lower())
+    counts = Counter(words)
+
+    bucket: dict[int, float] = {}
+    for word, freq in counts.items():
+        idx = hash(word) % _SPARSE_DIM
+        bucket[idx] = bucket.get(idx, 0.0) + float(freq)
+
+    indices = sorted(bucket.keys())
+    values = [bucket[i] for i in indices]
+    return SparseVector(indices=indices, values=values)
+
+
 async def upsert_chunks(chunks: list[dict[str, Any]]) -> None:
-    """Write embedded chunks into Qdrant."""
+    """Embed *chunks* and upsert them into Qdrant with dense + sparse vectors.
+
+    Each chunk dict is stored verbatim as the point payload so all fields
+    (``text``, ``source_url``, etc.) are retrievable after search.
+    """
+    if not chunks:
+        return
+
     await ensure_collection()
     client = _get_client()
+
+    texts = [chunk.get("text", "") for chunk in chunks]
+    dense_vectors = await embed_batch(texts)
 
     points = [
         PointStruct(
             id=str(uuid4()),
-            vector=chunk["embedding"],
-            payload={"text": chunk["text"], "source_url": chunk["source_url"]},
+            vector={
+                "dense": dense_vectors[i],
+                "sparse": _build_sparse_vector(texts[i]),
+            },
+            payload=chunk,
         )
-        for chunk in chunks
-        if "embedding" in chunk
+        for i, chunk in enumerate(chunks)
     ]
 
-    if points:
-        await client.upsert(collection_name=_COLLECTION, points=points)
+    await client.upsert(collection_name=_COLLECTION, points=points)
 
 
 async def retrieve_chunks(
@@ -66,15 +121,14 @@ async def retrieve_chunks(
 
     results = await client.search(
         collection_name=_COLLECTION,
-        query_vector=query_embedding,
+        query_vector=("dense", query_embedding),
         limit=settings.top_k_final,
         with_payload=True,
     )
 
     return [
         {
-            "text": hit.payload["text"],
-            "source_url": hit.payload["source_url"],
+            **hit.payload,
             "score": hit.score,
         }
         for hit in results
