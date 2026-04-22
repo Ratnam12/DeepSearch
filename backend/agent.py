@@ -114,9 +114,31 @@ async def _run_scrape_and_index(url: str) -> str:
     return f"Indexed {len(chunks)} chunks from {url}."
 
 
-async def _run_retrieve_chunks(query: str) -> str:
-    """Hybrid-search and return top chunks formatted for the LLM context window."""
-    chunks = await hybrid_search(query)
+def check_confidence(chunks: list[dict]) -> str | None:
+    """Return a refusal string when retrieval quality is too low, else None.
+
+    Returns None immediately when *chunks* is empty (no retrieval occurred at
+    all — the caller should handle the empty case separately).  When chunks are
+    present, compares the best rerank_score against config.confidence_threshold:
+    a score below the threshold means the retrieved context is not trustworthy
+    enough to pass to the LLM.
+    """
+    if not chunks:
+        return None
+    settings = get_settings()
+    max_score = max(c.get("rerank_score", c.get("score", 0.0)) for c in chunks)
+    threshold = settings.confidence_threshold
+    if max_score < threshold:
+        return (
+            f"I wasn't able to find sufficiently relevant information to answer "
+            f"confidently. (best relevance score: {max_score:.3f}, "
+            f"required threshold: {threshold:.3f})"
+        )
+    return None
+
+
+def _format_chunks(chunks: list[dict]) -> str:
+    """Format raw chunk dicts into a string suitable for the LLM context window."""
     if not chunks:
         return "No relevant chunks found."
     lines = [
@@ -125,6 +147,12 @@ async def _run_retrieve_chunks(query: str) -> str:
         for i, c in enumerate(chunks)
     ]
     return "\n\n".join(lines)
+
+
+async def _run_retrieve_chunks(query: str) -> str:
+    """Hybrid-search and return top chunks formatted for the LLM context window."""
+    chunks = await hybrid_search(query)
+    return _format_chunks(chunks)
 
 
 async def _dispatch_tool(name: str, arguments: str) -> str:
@@ -145,13 +173,29 @@ async def _execute_tool_calls(
     message: Any,
     history: list[dict[str, Any]],
 ) -> AsyncGenerator[dict[str, Any], None]:
-    """Execute every tool_call on *message*, mutate *history*, and yield events."""
+    """Execute every tool_call on *message*, mutate *history*, and yield events.
+
+    For ``retrieve_chunks`` calls the raw chunk list is inspected via
+    ``check_confidence`` before formatting.  A ``"low_confidence"`` event is
+    yielded when the best score falls below the configured threshold so that
+    ``run_agent`` can abort the pipeline early.
+    """
     history.append(message.model_dump(exclude_none=True))
     for tool_call in message.tool_calls or []:
         fn_name = tool_call.function.name
         fn_args = tool_call.function.arguments
         yield {"type": "tool_call", "name": fn_name, "args": fn_args}
-        result = await _dispatch_tool(fn_name, fn_args)
+
+        if fn_name == "retrieve_chunks":
+            query = json.loads(fn_args).get("query", "")
+            raw_chunks = await hybrid_search(query)
+            refusal = check_confidence(raw_chunks)
+            if refusal:
+                yield {"type": "low_confidence", "message": refusal}
+            result = _format_chunks(raw_chunks)
+        else:
+            result = await _dispatch_tool(fn_name, fn_args)
+
         history.append({"role": "tool", "tool_call_id": tool_call.id, "content": result})
         yield {"type": "tool_result", "name": fn_name, "content": result}
 
@@ -184,8 +228,15 @@ async def run_agent(question: str) -> AsyncGenerator[dict[str, Any], None]:
             await log_cost(model, usage.prompt_tokens, usage.completion_tokens)
 
         if choice.finish_reason == "tool_calls":
+            low_confidence_message: str | None = None
             async for event in _execute_tool_calls(choice.message, history):
+                if event["type"] == "low_confidence":
+                    low_confidence_message = event["message"]
+                    continue
                 yield event
+            if low_confidence_message is not None:
+                yield {"type": "text", "content": low_confidence_message}
+                return
             continue
 
         if choice.finish_reason == "stop":
