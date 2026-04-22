@@ -20,6 +20,7 @@ from backend.retriever import hybrid_search, retrieve_chunks, upsert_chunks
 from backend.scraper import scrape_url, scrape_urls
 from backend.llm import synthesise_answer
 from backend.model_router import log_cost, route_model
+from backend.security import sanitize
 
 # Module-level client — base_url and api_key are read once from config.
 _settings = get_settings()
@@ -105,11 +106,17 @@ async def _run_web_search(query: str) -> str:
 
 
 async def _run_scrape_and_index(url: str) -> str:
-    """Scrape *url*, chunk the text, and upsert into Qdrant."""
+    """Scrape *url*, sanitize against prompt injection, chunk, and upsert."""
     text = await scrape_url(url)
     if not text:
         return f"No content extracted from {url}."
-    chunks = chunk_text(text, source_url=url)
+    result = sanitize(url, text)
+    if result["is_suspicious"]:
+        print(
+            f"[security] injection patterns detected in {url}: "
+            f"{result['patterns']}"
+        )
+    chunks = chunk_text(result["safe_text"], source_url=url)
     await upsert_chunks(chunks)
     return f"Indexed {len(chunks)} chunks from {url}."
 
@@ -285,11 +292,17 @@ class DeepSearchAgent:
         if not chunks:
             urls = await self._fetch_fresh_urls(query)
             texts = await scrape_urls(urls)
-            raw_docs = [
-                {"url": url, "text": text}
-                for url, text in zip(urls, texts)
-                if text
-            ]
+            raw_docs = []
+            for url, text in zip(urls, texts):
+                if not text:
+                    continue
+                san = sanitize(url, text)
+                if san["is_suspicious"]:
+                    print(
+                        f"[security] injection patterns detected in {url}: "
+                        f"{san['patterns']}"
+                    )
+                raw_docs.append({"url": url, "text": san["safe_text"]})
             new_chunks = chunk_documents(raw_docs)
             await self._store_chunks(new_chunks)
             chunks = await retrieve_chunks(query_embedding)
