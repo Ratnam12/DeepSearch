@@ -28,8 +28,8 @@ class Settings(BaseSettings):
 
     # ── OpenRouter config ──────────────────────────────────────────────────
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    pro_model: str = "google/gemini-2.5-pro-preview"
-    flash_model: str = "google/gemini-2.5-flash-preview"
+    pro_model: str = "google/gemini-3.1-pro-preview"
+    flash_model: str = "google/gemini-3.1-flash-lite-preview"
 
     # ── Embeddings ─────────────────────────────────────────────────────────
     embedding_model: str = "text-embedding-3-small"

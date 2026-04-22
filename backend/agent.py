@@ -19,6 +19,7 @@ from backend.embedder import embed, embed_batch
 from backend.retriever import hybrid_search, retrieve_chunks, upsert_chunks
 from backend.scraper import scrape_url, scrape_urls
 from backend.llm import synthesise_answer
+from backend.model_router import log_cost, route_model
 
 # Module-level client — base_url and api_key are read once from config.
 _settings = get_settings()
@@ -169,14 +170,18 @@ async def run_agent(question: str) -> AsyncGenerator[dict[str, Any], None]:
         {"role": "user", "content": question},
     ]
 
+    model = route_model(question)
     while True:
         response = await _openai_client.chat.completions.create(
-            model=settings.pro_model,
+            model=model,
             messages=history,
             tools=TOOLS,
             tool_choice="auto",
         )
         choice = response.choices[0]
+        usage = response.usage
+        if usage:
+            await log_cost(model, usage.prompt_tokens, usage.completion_tokens)
 
         if choice.finish_reason == "tool_calls":
             async for event in _execute_tool_calls(choice.message, history):
@@ -185,7 +190,7 @@ async def run_agent(question: str) -> AsyncGenerator[dict[str, Any], None]:
 
         if choice.finish_reason == "stop":
             stream = await _openai_client.chat.completions.create(
-                model=settings.pro_model,
+                model=model,
                 messages=history,
                 stream=True,
             )

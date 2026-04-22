@@ -7,7 +7,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from backend.agent import DeepSearchAgent
+from backend.config import get_settings
 from backend.security import verify_api_key
+
 
 api_router = APIRouter()
 
