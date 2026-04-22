@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     confidence_threshold: float = 0.65
 
     # ── Semantic cache ─────────────────────────────────────────────────────
-    cache_similarity_threshold: float = 0.95
+    cache_similarity_threshold: float = 0.70
     cache_ttl_seconds: int = 3600
 
     # ── Scraper ────────────────────────────────────────────────────────────

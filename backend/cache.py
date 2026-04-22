@@ -8,12 +8,74 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
 import redis.asyncio as aioredis
 
 from backend.config import get_settings
+from backend.embedder import cosine_similarity, embed
+
+# Module-level client — single connection pool shared across all coroutines.
+_settings = get_settings()
+_redis: aioredis.Redis = aioredis.from_url(
+    _settings.redis_url, decode_responses=True
+)
+
+_KEY_PREFIX = "ds:cache:"
+
+
+async def cache_lookup(query: str) -> str | None:
+    """Return the cached answer whose stored embedding is closest to *query*.
+
+    Scans all ``ds:cache:*`` keys, computes cosine similarity against each
+    stored embedding, and returns the answer when the best score meets or
+    exceeds ``cache_similarity_threshold``.  Returns ``None`` on a miss.
+    """
+    settings = get_settings()
+    query_embedding = await embed(query)
+    keys: list[str] = await _redis.keys(f"{_KEY_PREFIX}*")
+
+    best_score = 0.0
+    best_answer: str | None = None
+
+    for key in keys:
+        raw = await _redis.get(key)
+        if not raw:
+            continue
+        entry: dict[str, Any] = json.loads(raw)
+        score = cosine_similarity(query_embedding, entry["embedding"])
+        if score > best_score:
+            best_score = score
+            best_answer = entry["answer"]
+
+    if best_score >= settings.cache_similarity_threshold:
+        return best_answer
+    return None
+
+
+async def cache_store(query: str, answer: str) -> None:
+    """Embed *query* and persist a JSON payload in Redis with a TTL.
+
+    Key format: ``ds:cache:{hash(query) % 10**10}``
+    Payload fields: query, answer, embedding (list[float]), stored_at (ISO-8601).
+    """
+    settings = get_settings()
+    embedding = await embed(query)
+    key = f"{_KEY_PREFIX}{hash(query) % 10 ** 10}"
+    payload = json.dumps({
+        "query": query,
+        "answer": answer,
+        "embedding": embedding,
+        "stored_at": datetime.now(timezone.utc).isoformat(),
+    })
+    await _redis.setex(key, settings.cache_ttl_seconds, payload)
+
+
+# ---------------------------------------------------------------------------
+# Legacy class — kept for backwards-compatibility with agent.py / tests.
+# ---------------------------------------------------------------------------
 
 
 class SemanticCache:
