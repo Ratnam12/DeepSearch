@@ -5,7 +5,9 @@ the scraper / chunker / retriever modules.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -19,8 +21,9 @@ from backend.embedder import embed, embed_batch
 from backend.retriever import hybrid_search, retrieve_chunks, upsert_chunks
 from backend.scraper import scrape_url, scrape_urls
 from backend.llm import synthesise_answer
-from backend.model_router import log_cost, route_model
+from backend.model_router import FLASH, log_cost, route_model
 from backend.security import sanitize
+from backend.dspy_modules import generate_candidate as _dspy_candidate
 
 # Module-level client — base_url and api_key are read once from config.
 _settings = get_settings()
@@ -207,21 +210,128 @@ async def _execute_tool_calls(
         yield {"type": "tool_result", "name": fn_name, "content": result}
 
 
+# ---------------------------------------------------------------------------
+# Complexity routing
+# ---------------------------------------------------------------------------
+
+
+def complexity_score(question: str) -> int:
+    """Return 1 for simple queries (FLASH-routed) or 3 for complex ones (PRO-routed).
+
+    Mirrors the same heuristics used by route_model() so the two are always
+    consistent — a score of 1 means the single-pass path is sufficient, while
+    3 triggers multi-candidate synthesis + LLM judging.
+    """
+    return 1 if route_model(question) == FLASH else 3
+
+
+# ---------------------------------------------------------------------------
+# Multi-candidate synthesis helpers
+# ---------------------------------------------------------------------------
+
+
+async def _generate_candidates(question: str, contexts: str) -> list[str]:
+    """Run SynthesizeAnswer 3 times in parallel and return the answer strings.
+
+    DSPy predict calls are synchronous; asyncio.to_thread keeps them off the
+    event loop so all three run concurrently without blocking.
+    """
+
+    async def _one() -> str:
+        try:
+            pred = await asyncio.to_thread(
+                _dspy_candidate, question=question, contexts=contexts
+            )
+            return getattr(pred, "answer", "") or ""
+        except Exception:
+            return ""
+
+    results = await asyncio.gather(_one(), _one(), _one(), return_exceptions=True)
+    candidates: list[str] = []
+    for r in results:
+        if isinstance(r, BaseException):
+            candidates.append("")
+        else:
+            candidates.append(r)  # type: ignore[arg-type]
+    return candidates
+
+
+_JUDGE_PROMPT = """\
+You are an impartial judge evaluating three candidate answers to a research question.
+
+Question: {question}
+
+Score each candidate on three dimensions (1 = poor, 5 = excellent):
+• Helpfulness — does it fully address what was asked?
+• Accuracy    — are claims well-supported and factually correct?
+• Conciseness — is it focused without unnecessary padding?
+
+Candidates:
+{candidates}
+
+Sum the three scores for each candidate and pick the one with the highest total.
+Respond with exactly one line:  BEST: <number>
+"""
+
+
+async def llm_judge(question: str, candidates: list[str]) -> str:
+    """Use the flash model to pick the best candidate via a scoring rubric.
+
+    Returns the winning candidate string.  Falls back to candidates[0] if
+    parsing fails or the list is empty.
+    """
+    if not candidates:
+        return ""
+    if len(candidates) == 1:
+        return candidates[0]
+
+    numbered = "\n\n".join(
+        f"[{i + 1}]\n{c}" for i, c in enumerate(candidates) if c
+    )
+    prompt = _JUDGE_PROMPT.format(question=question, candidates=numbered)
+
+    settings = get_settings()
+    response = await _openai_client.chat.completions.create(
+        model=settings.flash_model,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    text = (response.choices[0].message.content or "").strip()
+
+    match = re.search(r"BEST\s*:\s*(\d+)", text, re.IGNORECASE)
+    if match:
+        idx = int(match.group(1)) - 1
+        if 0 <= idx < len(candidates):
+            return candidates[idx]
+
+    return candidates[0]
+
+
 async def run_agent(question: str) -> AsyncGenerator[dict[str, Any], None]:
-    """Agentic loop: tool-call until the model signals stop, then stream the answer.
+    """Agentic loop: tool-call until the model signals stop, then synthesize.
+
+    For simple queries (complexity_score == 1) the existing single-pass
+    streaming synthesis is used.  For complex queries (score == 3) three
+    candidate answers are generated in parallel via the SynthesizeAnswer DSPy
+    module (pro model) and the best is selected by llm_judge (flash model).
 
     Yields dicts with key ``type`` set to one of:
     - ``"tool_call"``   — the model is invoking a tool.
     - ``"tool_result"`` — the tool execution result.
-    - ``"text"``        — a streamed chunk of the final answer.
+    - ``"text"``        — a streamed/yielded chunk of the final answer.
     """
     settings = get_settings()
+    score = complexity_score(question)
+
     history: list[dict[str, Any]] = [
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": question},
     ]
 
     model = route_model(question)
+    # Track the most recent retrieve_chunks result so the multi-candidate path
+    # can pass grounded context into each SynthesizeAnswer call.
+    last_context: str = ""
+
     while True:
         response = await _openai_client.chat.completions.create(
             model=model,
@@ -240,6 +350,8 @@ async def run_agent(question: str) -> AsyncGenerator[dict[str, Any], None]:
                 if event["type"] == "low_confidence":
                     low_confidence_message = event["message"]
                     continue
+                if event["type"] == "tool_result" and event["name"] == "retrieve_chunks":
+                    last_context = event["content"]
                 yield event
             if low_confidence_message is not None:
                 yield {"type": "text", "content": low_confidence_message}
@@ -247,19 +359,30 @@ async def run_agent(question: str) -> AsyncGenerator[dict[str, Any], None]:
             continue
 
         if choice.finish_reason == "stop":
-            stream = await _openai_client.chat.completions.create(
-                model=model,
-                messages=history,
-                stream=True,
-            )
-            async for chunk in stream:
-                delta = chunk.choices[0].delta.content if chunk.choices else None
-                if delta:
-                    yield {"type": "text", "content": delta}
+            if score == 3 and last_context:
+                # ── Multi-candidate path (complex queries) ──────────────────
+                # Generate 3 candidates with Pro via DSPy, judge with Flash.
+                candidates = await _generate_candidates(question, last_context)
+                winner = await llm_judge(question, candidates)
+                # Yield winner in word-sized chunks to keep the event contract
+                # identical to the single-pass streaming path.
+                for word in re.split(r"(\s+)", winner):
+                    if word:
+                        yield {"type": "text", "content": word}
+            else:
+                # ── Single-pass streaming path (simple queries) ─────────────
+                stream = await _openai_client.chat.completions.create(
+                    model=model,
+                    messages=history,
+                    stream=True,
+                )
+                async for chunk in stream:
+                    delta = chunk.choices[0].delta.content if chunk.choices else None
+                    if delta:
+                        yield {"type": "text", "content": delta}
             break
 
         # Guard: exit on unexpected finish reasons (e.g. "length", "content_filter").
-        
         break
         
 

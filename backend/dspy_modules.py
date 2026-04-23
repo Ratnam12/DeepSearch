@@ -55,7 +55,21 @@ class SynthesizeAnswer(dspy.Signature):
         description="comprehensive cited answer with [1][2] inline citations"
     )
     citations: str = dspy.OutputField(
-        description="list of source URLs used"
+        description="list of source URLs used, or empty string if none"
+    )
+
+
+class GenerateCandidate(dspy.Signature):
+    """Generate a comprehensive research answer from retrieved chunks."""
+
+    question: str = dspy.InputField(
+        description="user's research question"
+    )
+    contexts: str = dspy.InputField(
+        description="retrieved text chunks with source URLs"
+    )
+    answer: str = dspy.OutputField(
+        description="comprehensive cited answer with [1][2] inline citations"
     )
 
 
@@ -65,3 +79,4 @@ class SynthesizeAnswer(dspy.Signature):
 
 decompose_query: dspy.Predict = dspy.Predict(DecomposeQuery)
 synthesize_answer: dspy.Predict = dspy.Predict(SynthesizeAnswer)
+generate_candidate: dspy.Predict = dspy.Predict(GenerateCandidate)
