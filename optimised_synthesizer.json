@@ -1,0 +1,50 @@
+{
+  "predict": {
+    "lm": null,
+    "traces": [],
+    "train": [],
+    "demos": [
+      {
+        "question": "What is the purpose of chunk overlap in text splitting?",
+        "contexts": "Chunk overlap ensures that relevant context is not lost at chunk boundaries. When a sentence or paragraph spans two adjacent chunks, overlap guarantees that at least one chunk contains the complete thought, improving retrieval recall.",
+        "answer": "Chunk overlap ensures that relevant context is not lost at chunk boundaries. When a sentence or paragraph spans two adjacent chunks, overlap guarantees that at least one chunk contains the complete thought, improving retrieval recall."
+      },
+      {
+        "question": "How does cosine similarity work in vector search?",
+        "contexts": "Cosine similarity measures the angle between two vectors in a high-dimensional space. It returns 1 for identical directions and 0 for perpendicular vectors. In vector search, document embeddings are stored and a query embedding is compared against them using this metric to rank results by semantic relevance.",
+        "answer": "Cosine similarity measures the angle between two vectors in a high-dimensional space. It returns 1 for identical directions and 0 for perpendicular vectors. In vector search, document embeddings are stored and a query embedding is compared against them using this metric to rank results by semantic relevance."
+      },
+      {
+        "question": "What is retrieval-augmented generation?",
+        "contexts": "Retrieval-Augmented Generation (RAG) is a technique that combines a retrieval system with a generative language model. The retrieval component fetches relevant documents from a knowledge base, which are then provided as context to the generator so it can produce accurate, grounded answers rather than relying solely on its parametric memory.",
+        "answer": "Retrieval-Augmented Generation (RAG) is a technique that combines a retrieval system with a generative language model. The retrieval component fetches relevant documents from a knowledge base, which are then provided as context to the generator so it can produce accurate, grounded answers rather than relying solely on its parametric memory."
+      },
+      {
+        "question": "What are the main differences between BM25 and dense retrieval?",
+        "contexts": "BM25 is a sparse, keyword-based retrieval algorithm that scores documents by term frequency and inverse document frequency. Dense retrieval uses neural embeddings to match documents by semantic meaning. Dense retrieval generalises better to paraphrase queries; BM25 is more precise for exact term matches and requires no GPU.",
+        "answer": "BM25 is a sparse, keyword-based retrieval algorithm that scores documents by term frequency and inverse document frequency. Dense retrieval uses neural embeddings to match documents by semantic meaning. Dense retrieval generalises better to paraphrase queries; BM25 is more precise for exact term matches and requires no GPU."
+      }
+    ],
+    "signature": {
+      "instructions": "You are a critical intelligence system operating in a high-stakes national security crisis. Your task is to compose a strictly grounded answer to the user'",
+      "fields": [
+        {
+          "prefix": "Question:",
+          "description": "user's research question"
+        },
+        {
+          "prefix": "Contexts:",
+          "description": "retrieved text chunks with source URLs"
+        },
+        {
+          "prefix": "Answer:",
+          "description": "comprehensive cited answer with [1][2] inline citations"
+        },
+        {
+          "prefix": "Citations:",
+          "description": "list of source URLs used"
+        }
+      ]
+    }
+  }
+}
