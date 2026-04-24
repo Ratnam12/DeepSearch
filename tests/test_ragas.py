@@ -1,6 +1,8 @@
 """
 RAGAS-style evaluation against the golden set.
 Measures faithfulness, answer relevancy, and context recall for each example.
+Also runs an LLM-as-judge quality score (helpfulness, clarity, groundedness_signal)
+for every eval row via backend.judge.judge_quality.
 
 Run with:
     pytest tests/test_ragas.py -v
@@ -17,6 +19,7 @@ import pytest_asyncio
 
 from backend.agent import DeepSearchAgent
 from backend.config import get_settings
+from backend.judge import judge_quality
 
 _GOLDEN_SET_PATH = Path(__file__).parent / "golden_set.json"
 _settings = get_settings()
@@ -82,4 +85,34 @@ async def test_sources_returned(
     result = await agent.run(query=example["query"], use_cache=False)
     assert len(result["sources"]) >= 1, (
         f"[{example['id']}] no sources returned — retrieval may have failed."
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("example", load_golden_set(), ids=[e["id"] for e in load_golden_set()])
+async def test_judge_quality_scores(
+    example: dict[str, Any],
+    agent: DeepSearchAgent,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Log LLM-as-judge scores for every eval row.
+
+    Asserts that the overall average is at least 2.0 (a very lenient floor —
+    the primary value here is the logged per-dimension breakdown, not a hard gate).
+    """
+    result = await agent.run(query=example["query"], use_cache=False)
+    scores = await judge_quality(question=example["query"], answer=result["answer"])
+
+    with capsys.disabled():
+        print(
+            f"\n[judge] {example['id']} | "
+            f"helpfulness={scores['helpfulness']} "
+            f"clarity={scores['clarity']} "
+            f"groundedness_signal={scores['groundedness_signal']} "
+            f"overall={scores['overall']}"
+        )
+
+    assert scores["overall"] >= 2.0, (
+        f"[{example['id']}] judge overall score {scores['overall']} is below floor of 2.0 — "
+        f"scores: {scores}"
     )
