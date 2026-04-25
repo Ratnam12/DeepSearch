@@ -1,37 +1,302 @@
 [
   {
-    "id": "gs_001",
-    "query": "What is retrieval-augmented generation?",
-    "ground_truth": "Retrieval-Augmented Generation (RAG) is a technique that combines a retrieval system with a generative language model. The retrieval component fetches relevant documents from a knowledge base, which are then provided as context to the generator so it can produce accurate, grounded answers rather than relying solely on its parametric memory.",
-    "expected_sources_contain": ["arxiv.org", "wikipedia.org"],
-    "min_confidence": 0.65
+    "question": "What does the acronym FAISS stand for, and who developed it?",
+    "ground_truth": "FAISS stands for Facebook AI Similarity Search. It was developed by Meta AI Research (formerly Facebook AI Research) and is an open-source library for efficient similarity search and clustering of dense vectors.",
+    "difficulty": "easy",
+    "tags": ["vector-search", "faiss", "meta"]
   },
   {
-    "id": "gs_002",
-    "query": "How does cosine similarity work in vector search?",
-    "ground_truth": "Cosine similarity measures the angle between two vectors in a high-dimensional space. It returns 1 for identical directions and 0 for perpendicular vectors. In vector search, document embeddings are stored and a query embedding is compared against them using this metric to rank results by semantic relevance.",
-    "expected_sources_contain": [],
-    "min_confidence": 0.65
+    "question": "What is the default embedding dimension produced by OpenAI's text-embedding-3-small model?",
+    "ground_truth": "text-embedding-3-small produces 1536-dimensional embeddings by default, though it supports truncating to smaller dimensions via the dimensions parameter.",
+    "difficulty": "easy",
+    "tags": ["embeddings", "openai"]
   },
   {
-    "id": "gs_003",
-    "query": "What are the main differences between BM25 and dense retrieval?",
-    "ground_truth": "BM25 is a sparse, keyword-based retrieval algorithm that scores documents by term frequency and inverse document frequency. Dense retrieval uses neural embeddings to match documents by semantic meaning. Dense retrieval generalises better to paraphrase queries; BM25 is more precise for exact term matches and requires no GPU.",
-    "expected_sources_contain": [],
-    "min_confidence": 0.65
+    "question": "In what year was the original Transformer paper 'Attention Is All You Need' published?",
+    "ground_truth": "The paper was published in 2017. It was authored by Vaswani et al. from Google Brain and Google Research and introduced the Transformer architecture.",
+    "difficulty": "easy",
+    "tags": ["transformers", "nlp", "history"]
   },
   {
-    "id": "gs_004",
-    "query": "What is the purpose of chunk overlap in text splitting?",
-    "ground_truth": "Chunk overlap ensures that relevant context is not lost at chunk boundaries. When a sentence or paragraph spans two adjacent chunks, overlap guarantees that at least one chunk contains the complete thought, improving retrieval recall.",
-    "expected_sources_contain": [],
-    "min_confidence": 0.65
+    "question": "What programming language is Qdrant primarily written in?",
+    "ground_truth": "Qdrant is written in Rust, which gives it memory safety guarantees and high performance without a garbage collector.",
+    "difficulty": "easy",
+    "tags": ["qdrant", "vector-db"]
   },
   {
-    "id": "gs_005",
-    "query": "How does semantic caching reduce LLM API costs?",
-    "ground_truth": "Semantic caching stores previous query embeddings alongside their answers. When a new query arrives, its embedding is compared to cached ones using cosine similarity. If the similarity exceeds a threshold, the cached answer is returned immediately, skipping both the retrieval and generation steps and therefore avoiding API charges.",
-    "expected_sources_contain": [],
-    "min_confidence": 0.65
+    "question": "What does HNSW stand for in the context of approximate nearest neighbour search?",
+    "ground_truth": "HNSW stands for Hierarchical Navigable Small World. It is a graph-based indexing algorithm for approximate nearest neighbour search, introduced by Malkov and Yashunin in 2016.",
+    "difficulty": "easy",
+    "tags": ["hnsw", "ann", "vector-search"]
+  },
+  {
+    "question": "Who is the CEO of Anthropic?",
+    "ground_truth": "Dario Amodei is the CEO of Anthropic. He co-founded the company in 2021 along with his sister Daniela Amodei, who serves as President.",
+    "difficulty": "easy",
+    "tags": ["anthropic", "ai-companies"]
+  },
+  {
+    "question": "What is the name of the retrieval metric that measures the fraction of relevant documents returned in the top-k results?",
+    "ground_truth": "Recall@k measures the fraction of all relevant documents that appear in the top-k retrieved results. It answers the question: of all the truly relevant documents, how many did the retrieval system actually surface?",
+    "difficulty": "easy",
+    "tags": ["retrieval", "metrics", "evaluation"]
+  },
+  {
+    "question": "What open-source Python framework did LangChain release for building LLM-powered applications?",
+    "ground_truth": "LangChain released the LangChain Python framework (package: langchain) for building LLM-powered applications. It provides abstractions for chains, agents, memory, and retrieval, and is available under the MIT licence on PyPI.",
+    "difficulty": "easy",
+    "tags": ["langchain", "frameworks", "llm"]
+  },
+  {
+    "question": "What does the acronym RAG stand for in the context of language models?",
+    "ground_truth": "RAG stands for Retrieval-Augmented Generation. It was introduced by Lewis et al. in a 2020 paper and describes a technique that grounds generative language models with externally retrieved documents at inference time.",
+    "difficulty": "easy",
+    "tags": ["rag", "retrieval", "llm"]
+  },
+  {
+    "question": "Which company created the Chroma vector database?",
+    "ground_truth": "Chroma was created by Chroma (the company), founded in 2022. It is an open-source embedding database designed to make it easy to build AI applications with embeddings.",
+    "difficulty": "easy",
+    "tags": ["vector-db", "chroma"]
+  },
+  {
+    "question": "What is the name of Meta's open-source large language model family released in 2023?",
+    "ground_truth": "Meta released the Llama family of large language models in 2023, starting with Llama 1 in February 2023 and Llama 2 in July 2023. The models are available for research and commercial use under a custom licence.",
+    "difficulty": "easy",
+    "tags": ["llm", "meta", "open-source"]
+  },
+  {
+    "question": "What does the 'k' parameter control in k-nearest neighbour retrieval?",
+    "ground_truth": "The 'k' parameter specifies how many nearest neighbours to return. When retrieving documents for a query, the system returns the k vectors most similar to the query vector according to the chosen distance metric.",
+    "difficulty": "easy",
+    "tags": ["retrieval", "knn", "vector-search"]
+  },
+  {
+    "question": "What is the full name of the evaluation framework known as RAGAS?",
+    "ground_truth": "RAGAS stands for Retrieval Augmented Generation Assessment. It is an open-source framework for evaluating RAG pipelines across metrics such as faithfulness, answer relevancy, context precision, and context recall.",
+    "difficulty": "easy",
+    "tags": ["evaluation", "ragas", "rag"]
+  },
+  {
+    "question": "In which year was the BERT language model published by Google?",
+    "ground_truth": "BERT (Bidirectional Encoder Representations from Transformers) was published by Google in 2018. The paper 'BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding' appeared at NAACL 2019 but was first released on arXiv in October 2018.",
+    "difficulty": "easy",
+    "tags": ["bert", "nlp", "google", "history"]
+  },
+  {
+    "question": "What HTTP status code does FastAPI return by default for a successful POST request that creates a resource?",
+    "ground_truth": "FastAPI returns HTTP 200 OK by default for all successful responses unless you specify a different status_code in the route decorator. To follow REST conventions for resource creation, developers typically set status_code=201.",
+    "difficulty": "easy",
+    "tags": ["fastapi", "http", "api"]
+  },
+  {
+    "question": "How does BM25's inverse document frequency (IDF) component differ from its term frequency (TF) component in shaping retrieval rankings?",
+    "ground_truth": "TF in BM25 rewards terms that appear many times within a single document but applies diminishing returns via a saturation parameter (k1) so very high counts do not dominate. IDF penalises terms that appear across many documents in the corpus, boosting the weight of rare, discriminative terms. In practice, TF drives recall for repeated query terms while IDF drives precision by suppressing common words like 'the' that TF alone would over-rank.",
+    "difficulty": "medium",
+    "tags": ["bm25", "retrieval", "tf-idf"]
+  },
+  {
+    "question": "What are the main trade-offs between bi-encoder and cross-encoder models for document retrieval?",
+    "ground_truth": "Bi-encoders encode query and document independently, enabling fast pre-computation of document embeddings and ANN-based retrieval at scale, but they miss fine-grained token-level interactions. Cross-encoders jointly encode query and document together, capturing richer interactions and achieving higher precision, but they cannot pre-compute document representations and are too slow for first-stage retrieval over large corpora. The standard pattern is bi-encoder for first-stage retrieval followed by cross-encoder reranking on a small candidate set.",
+    "difficulty": "medium",
+    "tags": ["retrieval", "bi-encoder", "cross-encoder", "reranking"]
+  },
+  {
+    "question": "How does the chunk size chosen during document splitting affect the quality of a RAG pipeline?",
+    "ground_truth": "Smaller chunks (100–300 tokens) improve retrieval precision because each chunk is topically tight, reducing noise in the context window. However, they may split necessary context across multiple chunks, hurting generation quality. Larger chunks (500–1000 tokens) preserve more context per retrieved unit but introduce irrelevant content and consume more of the LLM's context window. The optimal size depends on document structure, query type, and how many chunks are retrieved — empirical tuning with RAGAS or similar metrics is recommended.",
+    "difficulty": "medium",
+    "tags": ["rag", "chunking", "retrieval"]
+  },
+  {
+    "question": "What is hybrid search in the context of information retrieval, and why is it typically more robust than either sparse or dense search alone?",
+    "ground_truth": "Hybrid search combines sparse retrieval (e.g., BM25) with dense retrieval (vector similarity) by merging their ranked result lists, often using Reciprocal Rank Fusion. Sparse retrieval excels at exact keyword matches and rare terms; dense retrieval excels at semantic similarity and paraphrased queries. Combining both achieves better coverage — the sparse component catches precise term matches that dense models miss, while the dense component captures semantically similar documents that keyword matching misses.",
+    "difficulty": "medium",
+    "tags": ["hybrid-search", "bm25", "dense-retrieval", "rrf"]
+  },
+  {
+    "question": "Explain how Reciprocal Rank Fusion (RRF) combines multiple ranked lists and what the constant k=60 accomplishes.",
+    "ground_truth": "RRF assigns each document a score of 1/(rank + k) for each ranked list it appears in, then sums scores across lists. Documents appearing highly in multiple lists receive the highest combined scores. The constant k=60 was empirically chosen by Cormack et al. (2009) to moderate the dominance of rank-1 documents — it prevents the very top result from any single list from having disproportionate influence while still ensuring rank order matters meaningfully.",
+    "difficulty": "medium",
+    "tags": ["rrf", "fusion", "retrieval"]
+  },
+  {
+    "question": "How does a reranker model improve the final answer quality in a two-stage retrieval pipeline?",
+    "ground_truth": "In a two-stage pipeline, a fast first-stage retriever (ANN or BM25) returns a candidate set (e.g., top-50 documents). A cross-encoder reranker then scores each candidate jointly with the query, capturing fine-grained token interactions that the first-stage model cannot. The top-k documents after reranking are fed to the LLM. This improves answer quality because the LLM's context window is filled with the most precisely relevant documents rather than approximately relevant ones.",
+    "difficulty": "medium",
+    "tags": ["reranking", "retrieval", "cross-encoder"]
+  },
+  {
+    "question": "What is late interaction in the context of the ColBERT retrieval model, and how does it differ from standard bi-encoder retrieval?",
+    "ground_truth": "Standard bi-encoders reduce each document and query to a single dense vector before computing similarity. ColBERT's late interaction retains per-token embeddings for both query and document, then computes a MaxSim operation: for each query token, find the most similar document token, and sum these per-token maximum similarities. This allows token-level interaction without the full cross-attention of a cross-encoder, achieving higher quality than standard bi-encoders while still enabling pre-computation of document token embeddings.",
+    "difficulty": "medium",
+    "tags": ["colbert", "retrieval", "late-interaction"]
+  },
+  {
+    "question": "What is contextual compression in LangChain's retrieval chain, and when is it useful?",
+    "ground_truth": "Contextual compression post-processes retrieved documents by extracting only the portions relevant to the query, using either an LLM extractor or an embeddings-based filter. It is useful when retrieved chunks are large and contain significant off-topic content, because it reduces the noise passed to the generator, lowering hallucination risk and fitting more useful information within the LLM context window.",
+    "difficulty": "medium",
+    "tags": ["langchain", "retrieval", "contextual-compression"]
+  },
+  {
+    "question": "How does multi-query retrieval improve recall compared to single-query retrieval, and what is its main cost?",
+    "ground_truth": "Multi-query retrieval generates several paraphrased versions of the original query using an LLM, runs retrieval for each variant, and merges the result sets with deduplication. Because different phrasings retrieve different relevant documents that a single query misses, recall improves. The main cost is latency and token usage: k retrieval calls and an LLM inference step are needed just for query expansion, making it unsuitable when response time is critical.",
+    "difficulty": "medium",
+    "tags": ["retrieval", "query-expansion", "recall"]
+  },
+  {
+    "question": "What is the role of metadata filtering in a vector database, and how does it interact with semantic search performance?",
+    "ground_truth": "Metadata filtering restricts ANN search to a pre-defined subset of vectors (e.g., documents by date range, category, or user ID) before or during the similarity search. This improves precision by excluding irrelevant documents from semantic ranking. However, aggressive filtering shrinks the candidate pool, which can hurt recall for ANN indices like HNSW that are optimised for large corpora — very small filtered sets may warrant exact brute-force search instead.",
+    "difficulty": "medium",
+    "tags": ["vector-db", "metadata-filtering", "qdrant"]
+  },
+  {
+    "question": "How does DSPy differ from traditional prompt engineering for building LLM pipelines?",
+    "ground_truth": "Traditional prompt engineering hand-writes and manually tunes prompt strings. DSPy instead treats prompts as learnable parameters and programs the LLM pipeline as a Python module graph with typed signatures. An optimizer (e.g., BootstrapFewShot, MIPROv2) automatically searches for few-shot demonstrations and instructions that maximise a metric on a development set. This makes pipelines more maintainable and reproducible, and typically outperforms hand-tuned prompts on complex reasoning tasks.",
+    "difficulty": "medium",
+    "tags": ["dspy", "prompt-engineering", "optimization"]
+  },
+  {
+    "question": "What is the faithfulness metric in RAGAS evaluation, and how is it computed?",
+    "ground_truth": "Faithfulness measures whether every claim in the generated answer is supported by the retrieved context. RAGAS implements it by asking an LLM to decompose the answer into atomic claims and then verify each claim against the context. The score is the fraction of claims that are entailed by the context. A low faithfulness score indicates hallucination — the model is asserting facts not present in the retrieved documents.",
+    "difficulty": "medium",
+    "tags": ["ragas", "evaluation", "faithfulness", "hallucination"]
+  },
+  {
+    "question": "How does the temperature parameter in an LLM API call affect the quality of answers in a RAG pipeline?",
+    "ground_truth": "Temperature controls output randomness by scaling the logit distribution before sampling. In RAG, low temperature (0–0.2) is preferred because the LLM should faithfully summarise retrieved facts rather than improvise. Higher temperatures increase creativity but also hallucination risk — the model may deviate from the retrieved context to generate more diverse phrasing. For factual Q&A over retrieved documents, temperature=0 (greedy decoding) is a common baseline.",
+    "difficulty": "medium",
+    "tags": ["llm", "temperature", "rag", "hallucination"]
+  },
+  {
+    "question": "What is the difference between Precision@k and MRR as retrieval evaluation metrics?",
+    "ground_truth": "Precision@k measures the fraction of the top-k retrieved documents that are relevant, averaging over queries. It treats all positions in the top-k equally. Mean Reciprocal Rank (MRR) focuses on where the first relevant document appears: for each query, the reciprocal of that rank is computed, then averaged. MRR is more appropriate for tasks where only the single best answer matters (e.g., question answering), while Precision@k better evaluates systems that need to surface multiple relevant documents.",
+    "difficulty": "medium",
+    "tags": ["retrieval", "metrics", "mrr", "precision"]
+  },
+  {
+    "question": "How does parent document retrieval work, and what problem does it solve compared to flat chunk retrieval?",
+    "ground_truth": "Parent document retrieval stores small child chunks in the vector index for precise semantic matching, but when a child chunk is retrieved it is swapped out for its larger parent document before being sent to the LLM. This solves the context coherence problem: small chunks retrieve accurately but may lack surrounding context that the LLM needs to answer well. Returning the full parent gives the generator richer context while preserving retrieval precision.",
+    "difficulty": "medium",
+    "tags": ["retrieval", "rag", "parent-document", "langchain"]
+  },
+  {
+    "question": "What is the difference between L2 (Euclidean) distance and cosine distance when used in an HNSW index, and when does the choice matter?",
+    "ground_truth": "L2 distance measures absolute spatial distance between vectors and is sensitive to vector magnitude. Cosine distance measures angular difference and is magnitude-invariant. For text embeddings where magnitude varies with document length, cosine is preferred. For embeddings normalised to unit length, both metrics produce identical rankings since L2 and cosine become monotonically equivalent. In Qdrant, choosing the wrong metric for unnormalised embeddings can significantly degrade retrieval quality.",
+    "difficulty": "medium",
+    "tags": ["hnsw", "distance-metrics", "embeddings", "qdrant"]
+  },
+  {
+    "question": "How does Anthropic's Constitutional AI (CAI) approach differ from standard RLHF in terms of alignment methodology?",
+    "ground_truth": "Standard RLHF uses human labellers to rate model outputs and trains a reward model on those preferences. Constitutional AI replaces many human preference labels with a written set of principles (a 'constitution'). The model critiques and revises its own responses against those principles (RLAIF — RL from AI feedback), reducing reliance on large-scale human rating. CAI is more scalable and makes alignment criteria explicit and auditable, but depends on the quality of the constitution and the model's self-critique ability.",
+    "difficulty": "medium",
+    "tags": ["anthropic", "alignment", "rlhf", "constitutional-ai"]
+  },
+  {
+    "question": "What are the primary failure modes of a production RAG pipeline and how can each be detected?",
+    "ground_truth": "Key failure modes include: (1) Retrieval failure — relevant documents are not retrieved; detected by low context recall in RAGAS. (2) Context noise — retrieved context is irrelevant or contradictory; detected by low context precision. (3) Hallucination — the LLM generates claims not in context; detected by low faithfulness score. (4) Answer incompleteness — the answer omits key facts from context; detected by low answer recall. (5) Semantic cache drift — cached answers are returned for semantically similar but factually different queries; detected by divergence testing.",
+    "difficulty": "medium",
+    "tags": ["rag", "failure-modes", "evaluation", "production"]
+  },
+  {
+    "question": "How does the IVF (Inverted File) index differ from HNSW for approximate nearest neighbour search in terms of build time, query time, and memory usage?",
+    "ground_truth": "IVF clusters vectors into Voronoi cells at build time using k-means; query time searches only the nearest n_probe cells, making both build and query time depend on the number of clusters. HNSW builds a multilayer navigable graph with higher build cost and memory (stores graph edges) but achieves very fast and accurate queries without needing to tune probe counts. IVF uses less memory and is faster to build for very large corpora, but HNSW generally achieves better recall-speed trade-offs at moderate scales.",
+    "difficulty": "medium",
+    "tags": ["ivf", "hnsw", "ann", "vector-search"]
+  },
+  {
+    "question": "What is the MMLU benchmark, and what does a model's MMLU score actually tell you about its practical usefulness?",
+    "ground_truth": "MMLU (Massive Multitask Language Understanding) is a benchmark covering 57 academic subjects from elementary to professional level, testing a model's factual knowledge and reasoning via multiple-choice questions. A high MMLU score indicates broad factual recall and exam-style reasoning. However, MMLU score is a poor proxy for practical RAG usefulness: RAG tasks require grounding, instruction following, and answer synthesis from retrieved context — skills not well-measured by static multiple-choice questions. Models with similar MMLU scores can differ substantially in RAG quality.",
+    "difficulty": "medium",
+    "tags": ["evaluation", "mmlu", "benchmarks", "llm"]
+  },
+  {
+    "question": "How does sentence-transformers' all-MiniLM-L6-v2 model compare to OpenAI's text-embedding-3-small for retrieval use cases?",
+    "ground_truth": "all-MiniLM-L6-v2 produces 384-dimensional embeddings, runs fully locally with no API cost, and achieves good performance on BEIR benchmarks for its size. text-embedding-3-small produces 1536-dimensional embeddings (or fewer via truncation), costs per token, and generally outperforms MiniLM on harder retrieval benchmarks. The trade-off is cost and latency (API call vs local inference) against retrieval quality. For privacy-sensitive or high-volume applications, MiniLM is preferred; for highest-quality retrieval, text-embedding-3-small or larger models win.",
+    "difficulty": "medium",
+    "tags": ["embeddings", "sentence-transformers", "openai", "comparison"]
+  },
+  {
+    "question": "Compare MIPROv2 and BootstrapFewShot as DSPy optimizers — under what conditions would you choose each?",
+    "ground_truth": "BootstrapFewShot searches for effective few-shot demonstrations by running the pipeline on training examples, collecting traces where the metric is satisfied, and using those as few-shot examples. It is fast and requires a small training set (~20–100 examples). MIPROv2 jointly optimises both the few-shot demonstrations and the instruction text using a Bayesian surrogate model over the search space; it requires more training examples (~200+) and more LLM calls but achieves higher performance on complex pipelines. Choose BootstrapFewShot when labelled data is scarce or budget is limited; choose MIPROv2 when you have sufficient data and are optimising a multi-module pipeline with significant headroom for improvement.",
+    "difficulty": "hard",
+    "tags": ["dspy", "miprov2", "bootstrapfewshot", "optimization"]
+  },
+  {
+    "question": "Under what conditions does a semantic cache degrade answer quality, and how can you mitigate each failure mode?",
+    "ground_truth": "A semantic cache degrades quality when: (1) Semantically similar queries require different answers due to context (e.g., 'What is the weather today?' vs yesterday's cached answer for the same phrase) — mitigate by including temporal signals in the cache key or TTL-expiring time-sensitive entries. (2) The similarity threshold is too low, causing semantically adjacent but factually distinct queries to return wrong cached answers — mitigate by raising the threshold and A/B testing. (3) Knowledge updates invalidate cached answers — mitigate with cache invalidation on document ingestion. (4) User-specific queries are cached globally — mitigate by partitioning the cache by user or tenant namespace.",
+    "difficulty": "hard",
+    "tags": ["semantic-cache", "rag", "cache", "failure-modes"]
+  },
+  {
+    "question": "When and why does fine-tuning a language model outperform RAG for knowledge injection, and when does RAG win?",
+    "ground_truth": "Fine-tuning encodes knowledge into model weights and wins when: the knowledge domain is stable (rarely updated), requires implicit stylistic adaptation, or involves skills (not facts) such as structured output format, tone, or reasoning patterns. Fine-tuning struggles with factual recall accuracy and cannot update knowledge without retraining. RAG wins when: knowledge changes frequently, source attribution is required, the knowledge corpus is too large for fine-tuning, or you need to serve multiple knowledge domains from one model. For most production knowledge-intensive Q&A systems, RAG is preferred; fine-tuning on top of a RAG system captures stylistic and formatting preferences that retrieval cannot.",
+    "difficulty": "hard",
+    "tags": ["fine-tuning", "rag", "knowledge-injection", "comparison"]
+  },
+  {
+    "question": "How does RAPTOR (Recursive Abstractive Processing for Tree-Organized Retrieval) differ from standard flat RAG, and what retrieval problems does it address?",
+    "ground_truth": "RAPTOR recursively clusters leaf-level chunks and generates LLM summaries of each cluster, then clusters those summaries and summarises again, building a tree of increasingly abstract representations. At query time, retrieval can happen at any level of the tree. Flat RAG retrieves only leaf chunks, which fail for queries requiring broad thematic synthesis across many documents. RAPTOR addresses this by providing coarse-grained summaries as retrievable units, improving performance on questions that span multiple documents or require understanding document-level themes. The trade-off is significantly higher indexing cost and complexity.",
+    "difficulty": "hard",
+    "tags": ["raptor", "rag", "indexing", "retrieval", "summarization"]
+  },
+  {
+    "question": "How do you systematically detect and reduce hallucination in a deployed RAG pipeline without degrading answer completeness?",
+    "ground_truth": "Detection: use faithfulness evaluation (RAGAS or NLI-based claim verification) in CI on a golden set; log and flag responses where faithfulness < threshold in production. Reduction without losing completeness: (1) Lower temperature to 0–0.1 to reduce creative deviation from context. (2) Add an explicit grounding instruction: 'Only state facts present in the context; say you don't know otherwise.' (3) Improve retrieval precision so the context is more faithful to the query. (4) Use a cross-encoder reranker to remove irrelevant context chunks before generation. (5) Implement post-generation verification: have a second LLM pass verify each claim against the retrieved context and redact unsupported claims. Completeness is preserved by focusing hallucination reduction on unsupported claims rather than silencing the model broadly.",
+    "difficulty": "hard",
+    "tags": ["hallucination", "rag", "evaluation", "production"]
+  },
+  {
+    "question": "What are the concrete failure modes when using HNSW's ef_search too low versus too high, and how do you choose the right value for a production system?",
+    "ground_truth": "ef_search too low: the graph traversal terminates early, missing true nearest neighbours; recall drops significantly and the returned k results contain irrelevant documents, degrading generation quality. ef_search too high: every query explores a large fraction of the graph; recall approaches 100% but latency increases linearly. For production: benchmark recall@10 and p99 latency at a range of ef_search values on a representative query workload. Choose the value where the recall curve flattens (diminishing returns) while latency remains within SLA — typically ef_search = 100–200 for most workloads. Also monitor for query distribution shift, which can degrade the recall-latency curve over time.",
+    "difficulty": "hard",
+    "tags": ["hnsw", "ef_search", "vector-db", "production", "recall"]
+  },
+  {
+    "question": "How does query decomposition interact with retrieval quality for multi-hop questions, and what are the risks of decomposing incorrectly?",
+    "ground_truth": "Query decomposition breaks a complex multi-hop question into simpler sub-queries, retrieves documents for each, then synthesises a final answer from all retrieved contexts. This improves retrieval quality for hops where a single embedding cannot capture both sub-topics simultaneously. Risks of incorrect decomposition: (1) Sub-queries that are too vague retrieve unrelated documents, injecting noise. (2) Missed dependencies between hops — if hop 2's answer requires hop 1's retrieved entity, sequential decomposition must thread the intermediate answer into the next query. (3) Decomposing queries that do not actually require multiple hops wastes latency. Mitigation: validate decomposition with a confidence check or use DSPy to learn decomposition patterns from labelled examples.",
+    "difficulty": "hard",
+    "tags": ["query-decomposition", "multi-hop", "rag", "retrieval"]
+  },
+  {
+    "question": "When would you choose a knowledge graph-based retrieval system over a pure vector-based system, and what are the engineering costs?",
+    "ground_truth": "Knowledge graph retrieval wins when: queries require multi-hop relational reasoning (e.g., 'Who manages the team that owns the service that processes payments?'), entities and relationships are well-defined, or you need explainable retrieval paths. Vector-based retrieval wins for broad semantic similarity over unstructured text. Engineering costs of graph-based systems are high: entity and relation extraction (often LLM-based or NLP pipelines) must be accurate; the graph schema must be maintained; query translation to SPARQL or Cypher adds latency; and graph traversal can be slow for deep hops. GraphRAG (Microsoft, 2024) hybridises both, using community detection and summaries to enable global reasoning while retaining vector-based local retrieval.",
+    "difficulty": "hard",
+    "tags": ["knowledge-graph", "graphrag", "retrieval", "vector-db"]
+  },
+  {
+    "question": "What is the BEIR benchmark and what does a model's average BEIR score tell you about its generalisation to retrieval tasks?",
+    "ground_truth": "BEIR (Benchmarking IR) is a heterogeneous benchmark by Thakur et al. (2021) comprising 18 diverse retrieval datasets spanning domains such as biomedical, financial, COVID, and argument retrieval. Models are evaluated in a zero-shot transfer setting — trained on one dataset (typically MS MARCO) then tested on all BEIR datasets without fine-tuning. A high average BEIR nDCG@10 score indicates robust zero-shot generalisation across domains and query types, making it the standard for comparing retrieval model backbones. However, aggregate scores mask per-domain weaknesses; a model should be evaluated on the domain closest to production use.",
+    "difficulty": "hard",
+    "tags": ["beir", "benchmarks", "retrieval", "evaluation"]
+  },
+  {
+    "question": "How does OpenRouter's model routing differ from calling OpenAI's API directly, and what are the latency and cost implications?",
+    "ground_truth": "OpenRouter is a unified API gateway that provides a single endpoint and billing layer for multiple LLM providers (OpenAI, Anthropic, Mistral, etc.). Unlike calling OpenAI directly, OpenRouter adds one network hop, increasing latency by 20–100 ms. Cost-wise, OpenRouter charges a small markup (typically 5–10%) above provider prices in exchange for provider failover, load balancing, and unified invoicing. For latency-critical production use, direct API calls are preferred; OpenRouter is beneficial when provider redundancy, model switching, or multi-provider cost optimisation matter more than minimising median latency.",
+    "difficulty": "hard",
+    "tags": ["openrouter", "llm", "api", "latency", "cost"]
+  },
+  {
+    "question": "How does Qdrant's sparse vector support enable hybrid search without a separate BM25 index?",
+    "ground_truth": "Qdrant (from v1.7) supports named sparse vectors stored alongside dense vectors in the same collection. A sparse vector is represented as an index-value map (token ID to weight), allowing BM25 or SPLADE scores to be stored natively. At query time, Qdrant executes a sparse dot-product query and a dense ANN query in parallel, returning separate ranked lists that can be merged with RRF in a single API call using the Query API. This eliminates the need to run a separate Elasticsearch or BM25 service, reducing infrastructure complexity for hybrid search pipelines.",
+    "difficulty": "hard",
+    "tags": ["qdrant", "hybrid-search", "sparse-vectors", "bm25"]
+  },
+  {
+    "question": "What is the ef_construction parameter in HNSW, and how does it differ from ef_search in its impact on the index?",
+    "ground_truth": "ef_construction controls the size of the dynamic candidate list used when inserting each new vector into the HNSW graph during index build. A larger ef_construction means more neighbours are considered at insertion time, producing a higher-quality graph with better connectivity — this improves recall at query time for a given ef_search value. Unlike ef_search, ef_construction is a build-time parameter and cannot be changed after the index is created without rebuilding. The trade-off is build time: doubling ef_construction roughly doubles build time with diminishing recall gains above a certain point.",
+    "difficulty": "medium",
+    "tags": ["hnsw", "vector-db", "indexing", "ef_construction"]
+  },
+  {
+    "question": "What is the difference between answer relevancy and context relevancy as RAGAS metrics, and which failure does each diagnose?",
+    "ground_truth": "Answer relevancy measures how well the generated answer addresses the original question, penalising incomplete or off-topic answers regardless of context. Context relevancy (also called context precision in newer RAGAS versions) measures what fraction of the retrieved context is actually relevant to the question, identifying retrieval noise. Low answer relevancy with high context relevancy indicates a generation failure (the LLM ignored good context). Low context relevancy with high answer relevancy indicates the LLM answered correctly despite poor retrieval, which is lucky and fragile. Both metrics together pinpoint whether problems lie in retrieval or generation.",
+    "difficulty": "medium",
+    "tags": ["ragas", "evaluation", "metrics", "rag"]
+  },
+  {
+    "question": "What is the SPLADE retrieval model, and how does it improve upon standard BM25?",
+    "ground_truth": "SPLADE (Sparse Lexical and Expansion Model) is a learned sparse retrieval model that expands both queries and documents into high-dimensional sparse vectors over a fixed vocabulary using a BERT-based encoder with log-saturation and FLOPS regularisation. Unlike BM25, which uses exact term statistics, SPLADE learns to add related terms (e.g., a document about 'dogs' gets weight on 'canine') enabling vocabulary expansion. SPLADE achieves significantly higher recall than BM25 on out-of-domain queries while retaining the inverted-index efficiency of sparse retrieval, often matching or exceeding dense bi-encoders on BEIR.",
+    "difficulty": "medium",
+    "tags": ["splade", "bm25", "sparse-retrieval", "retrieval"]
   }
 ]
