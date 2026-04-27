@@ -77,6 +77,16 @@ async def ensure_collection() -> None:
         )
 
 
+async def reset_collection() -> None:
+    """Delete and recreate the Qdrant collection used by DeepSearch."""
+    client = _get_client()
+    existing = await client.get_collections()
+    names = [c.name for c in existing.collections]
+    if _COLLECTION in names:
+        await client.delete_collection(collection_name=_COLLECTION)
+    await ensure_collection()
+
+
 def _build_sparse_vector(text: str) -> SparseVector:
     """Return a sparse vector built from word frequencies using hash bucketing.
 

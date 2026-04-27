@@ -153,16 +153,27 @@ def _format_chunks(chunks: list[dict]) -> str:
         return "No relevant chunks found."
     lines = [
         f"[{i + 1}] score={c.get('rerank_score', c.get('score', 0)):.3f} "
-        f"src={c.get('source_url', '')}\n{c['text'][:600]}"
+        f"src={c.get('source_url', '')}\n{c['text'][:1500]}"
         for i, c in enumerate(chunks)
     ]
     return "\n\n".join(lines)
+
+
+def _chunk_contexts(chunks: list[dict[str, Any]]) -> list[str]:
+    """Return raw chunk texts for downstream evaluation against used evidence."""
+    return [str(c["text"]) for c in chunks if c.get("text")]
 
 
 async def _run_retrieve_chunks(query: str) -> str:
     """Hybrid-search and return top chunks formatted for the LLM context window."""
     chunks = await hybrid_search(query)
     return _format_chunks(chunks)
+
+
+async def _retrieve_chunks_with_contexts(query: str) -> tuple[str, list[str]]:
+    """Hybrid-search and return both formatted and raw chunk text contexts."""
+    chunks = await hybrid_search(query)
+    return _format_chunks(chunks), _chunk_contexts(chunks)
 
 
 async def _dispatch_tool(name: str, arguments: str) -> str:
@@ -186,9 +197,9 @@ async def _execute_tool_calls(
     """Execute every tool_call on *message*, mutate *history*, and yield events.
 
     For ``retrieve_chunks`` calls the raw chunk list is inspected via
-    ``check_confidence`` before formatting.  A ``"low_confidence"`` event is
-    yielded when the best score falls below the configured threshold so that
-    ``run_agent`` can abort the pipeline early.
+    ``check_confidence`` before formatting. Low-confidence retrieval is passed
+    back to the model as an insufficiency signal so it can search and scrape
+    fresh sources before answering.
     """
     history.append(message.model_dump(exclude_none=True))
     for tool_call in message.tool_calls or []:
@@ -200,14 +211,22 @@ async def _execute_tool_calls(
             query = json.loads(fn_args).get("query", "")
             raw_chunks = await hybrid_search(query)
             refusal = check_confidence(raw_chunks)
-            if refusal:
-                yield {"type": "low_confidence", "message": refusal}
             result = _format_chunks(raw_chunks)
+            contexts = _chunk_contexts(raw_chunks)
+            if refusal:
+                result = (
+                    f"{result}\n\n"
+                    f"Retrieval confidence warning: {refusal}\n"
+                    "The retrieved context is insufficient. Use web_search, "
+                    "scrape_and_index, and retrieve_chunks again before answering."
+                )
+                contexts = []
         else:
             result = await _dispatch_tool(fn_name, fn_args)
+            contexts = []
 
         history.append({"role": "tool", "tool_call_id": tool_call.id, "content": result})
-        yield {"type": "tool_result", "name": fn_name, "content": result}
+        yield {"type": "tool_result", "name": fn_name, "content": result, "contexts": contexts}
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +261,8 @@ async def _generate_candidates(question: str, contexts: str) -> list[str]:
             pred = await asyncio.to_thread(
                 _dspy_candidate, question=question, contexts=contexts
             )
-            return getattr(pred, "answer", "") or ""
+            answer = getattr(pred, "answer", "") or ""
+            return answer
         except Exception:
             return ""
 
@@ -257,24 +277,26 @@ async def _generate_candidates(question: str, contexts: str) -> list[str]:
 
 
 _JUDGE_PROMPT = """\
-You are an impartial judge evaluating three candidate answers to a research question.
+You are an impartial judge evaluating candidate answers to a research question.
 
 Question: {question}
 
-Score each candidate on three dimensions (1 = poor, 5 = excellent):
-• Helpfulness — does it fully address what was asked?
-• Accuracy    — are claims well-supported and factually correct?
-• Conciseness — is it focused without unnecessary padding?
+Retrieved context:
+{contexts}
+
+Pick the answer that is best supported by the retrieved context.
+Reject candidates that include claims not present in the retrieved context, even if
+they are useful or likely true. A longer answer can win, but only if every factual
+claim is grounded in the context. Prefer concise answers when grounding is tied.
 
 Candidates:
 {candidates}
 
-Sum the three scores for each candidate and pick the one with the highest total.
 Respond with exactly one line:  BEST: <number>
 """
 
 
-async def llm_judge(question: str, candidates: list[str]) -> str:
+async def llm_judge(question: str, candidates: list[str], contexts: str) -> str:
     """Use the flash model to pick the best candidate via a scoring rubric.
 
     Returns the winning candidate string.  Falls back to candidates[0] if
@@ -288,7 +310,11 @@ async def llm_judge(question: str, candidates: list[str]) -> str:
     numbered = "\n\n".join(
         f"[{i + 1}]\n{c}" for i, c in enumerate(candidates) if c
     )
-    prompt = _JUDGE_PROMPT.format(question=question, candidates=numbered)
+    prompt = _JUDGE_PROMPT.format(
+        question=question,
+        contexts=contexts,
+        candidates=numbered,
+    )
 
     settings = get_settings()
     response = await _openai_client.chat.completions.create(
@@ -345,44 +371,57 @@ async def run_agent(question: str) -> AsyncGenerator[dict[str, Any], None]:
             await log_cost(model, usage.prompt_tokens, usage.completion_tokens)
 
         if choice.finish_reason == "tool_calls":
-            low_confidence_message: str | None = None
             async for event in _execute_tool_calls(choice.message, history):
-                if event["type"] == "low_confidence":
-                    low_confidence_message = event["message"]
-                    continue
                 if event["type"] == "tool_result" and event["name"] == "retrieve_chunks":
-                    last_context = event["content"]
+                    new_ctx = event["content"]
+                    has_raw_contexts = bool(event.get("contexts"))
+                    if has_raw_contexts:
+                        # Use the final successful retrieval as the synthesis
+                        # context. Earlier retrievals are often exploratory and
+                        # lower context precision when carried into evaluation.
+                        last_context = new_ctx[:settings.max_dspy_context_chars]
                 yield event
-            if low_confidence_message is not None:
-                yield {"type": "text", "content": low_confidence_message}
-                return
             continue
 
         if choice.finish_reason == "stop":
+            content = choice.message.content or ""
+
+            if score == 3 and not last_context and not content:
+                # The model skipped all tools and returned empty content on a
+                # complex query — proactively retrieve context so the
+                # multi-candidate path has grounded material to work with.
+                last_context, forced_contexts = await _retrieve_chunks_with_contexts(question)
+                yield {
+                    "type": "tool_result",
+                    "name": "retrieve_chunks",
+                    "content": last_context,
+                    "contexts": forced_contexts,
+                }
+
             if score == 3 and last_context:
                 # ── Multi-candidate path (complex queries) ──────────────────
-                # Generate 3 candidates with Pro via DSPy, judge with Flash.
                 candidates = await _generate_candidates(question, last_context)
-                winner = await llm_judge(question, candidates)
-                # Yield winner in word-sized chunks to keep the event contract
-                # identical to the single-pass streaming path.
+                # The judge sees the same retrieved context as the generators,
+                # so long answers can win when every claim is grounded.
+                if content:
+                    candidates.append(content)
+                winner = await llm_judge(question, candidates, last_context)
                 for word in re.split(r"(\s+)", winner):
                     if word:
                         yield {"type": "text", "content": word}
             else:
-                # ── Single-pass streaming path (simple queries) ─────────────
-                stream = await _openai_client.chat.completions.create(
-                    model=model,
-                    messages=history,
-                    stream=True,
-                )
-                async for chunk in stream:
-                    delta = chunk.choices[0].delta.content if chunk.choices else None
-                    if delta:
-                        yield {"type": "text", "content": delta}
+                # ── Single-pass path: use the answer already in this response.
+                # Making a second LLM call here was the source of empty answers —
+                # the model had already produced content; we just need to yield it.
+                if content:
+                    yield {"type": "text", "content": content}
             break
 
-        # Guard: exit on unexpected finish reasons (e.g. "length", "content_filter").
+        # Unexpected finish reason (e.g. "length", "content_filter"): yield
+        # whatever partial content exists rather than returning empty-handed.
+        content = choice.message.content or ""
+        if content:
+            yield {"type": "text", "content": content}
         break
         
 

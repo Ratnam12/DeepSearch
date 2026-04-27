@@ -60,7 +60,7 @@ class SynthesizeAnswer(dspy.Signature):
 
 
 class GenerateCandidate(dspy.Signature):
-    """Generate a comprehensive research answer from retrieved chunks."""
+    """Generate a grounded answer strictly from the provided context chunks."""
 
     question: str = dspy.InputField(
         description="user's research question"
@@ -69,7 +69,11 @@ class GenerateCandidate(dspy.Signature):
         description="retrieved text chunks with source URLs"
     )
     answer: str = dspy.OutputField(
-        description="comprehensive cited answer with [1][2] inline citations"
+        description=(
+            "Answer based ONLY on information present in the provided context chunks. "
+            "Do not add facts from prior knowledge not found in the contexts. "
+            "Use [1][2] inline citations referring to the numbered chunks."
+        )
     )
 
 

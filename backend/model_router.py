@@ -20,6 +20,8 @@ _RATES: dict[str, tuple[float, float]] = {
     "google/gemini-2.5-pro-preview": (2.00, 12.00),
     "google/gemini-3.1-flash-lite-preview": (0.25, 1.50),
     "google/gemini-3.1-pro-preview": (2.00, 12.00),
+    "openai/gpt-5.5": (5.00, 30.00),
+    "openai/gpt-5.4-mini": (0.25, 2.00),
 }
 
 

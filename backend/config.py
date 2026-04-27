@@ -28,15 +28,16 @@ class Settings(BaseSettings):
 
     # ── OpenRouter config ──────────────────────────────────────────────────
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    pro_model: str = "google/gemini-3.1-pro-preview"
-    flash_model: str = "google/gemini-3.1-flash-lite-preview"
+    pro_model: str = "openai/gpt-5.5"
+    flash_model: str = "openai/gpt-5.4-mini"
+    ragas_model: str = "openai/gpt-5.4-mini"
 
     # ── Embeddings ─────────────────────────────────────────────────────────
     embedding_model: str = "text-embedding-3-small"
     embed_max_chars: int = 8191
 
     # ── Chunking ───────────────────────────────────────────────────────────
-    chunk_size: int = 1500
+    chunk_size: int = 800
     chunk_overlap: int = 200
     chunk_min_length: int = 80
 
@@ -44,6 +45,11 @@ class Settings(BaseSettings):
     top_k_retrieval: int = 25
     top_k_final: int = 5
     confidence_threshold: float = 0.65
+
+    # ── Multi-candidate synthesis ───────────────────────────────────────────
+    # Max chars of accumulated retrieved context passed to DSPy GenerateCandidate.
+    # Caps the concatenation of multiple retrieve_chunks rounds.
+    max_dspy_context_chars: int = 9_000
 
     # ── Semantic cache ─────────────────────────────────────────────────────
     cache_similarity_threshold: float = 0.70

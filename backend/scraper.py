@@ -89,7 +89,11 @@ async def _scrape_page(browser: Browser, url: str, timeout_s: int) -> str:
         f"() => document.querySelectorAll(`{_NOISE_SELECTOR}`).forEach(el => el.remove())"
     )
 
-    text = await page.inner_text("body")
+    try:
+        text = await page.inner_text("body", timeout=timeout_s * 1000)
+    except (PlaywrightTimeoutError, PlaywrightError):
+        await page.close()
+        return ""
     await page.close()
     return _filter_lines(text, settings.scrape_min_line_length)
 
