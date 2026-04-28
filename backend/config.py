@@ -22,9 +22,9 @@ class Settings(BaseSettings):
     serper_api_key: str
 
     # ── Service URLs ───────────────────────────────────────────────────────
-    qdrant_url: str = Field(default="http://localhost:6333")
+    qdrant_url: str = Field(default="http://127.0.0.1:6333")
     qdrant_api_key: str = Field(default="")
-    redis_url: str = Field(default="redis://localhost:6379")
+    redis_url: str = Field(default="redis://127.0.0.1:6379")
 
     # ── OpenRouter config ──────────────────────────────────────────────────
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
