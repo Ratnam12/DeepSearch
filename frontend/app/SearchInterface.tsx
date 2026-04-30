@@ -104,7 +104,11 @@ export default function SearchInterface() {
 
       const response = await fetch(`${API_BASE_URL}/search`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          Accept: "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({ question: trimmed }),
       });
 
