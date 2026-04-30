@@ -7,23 +7,29 @@ similarity so identical (or near-identical) queries skip the full pipeline.
 from __future__ import annotations
 
 import json
-import time
 from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
-import redis.asyncio as aioredis
+from upstash_redis.asyncio import Redis
 
 from backend.config import get_settings
 from backend.embedder import cosine_similarity, embed
 
-# Module-level client — single connection pool shared across all coroutines.
-_settings = get_settings()
-_redis: aioredis.Redis = aioredis.from_url(
-    _settings.redis_url, decode_responses=True
-)
-
 _KEY_PREFIX = "ds:cache:"
+_redis: Redis | None = None
+
+
+def _get_redis() -> Redis:
+    """Return the Upstash REST client configured from environment settings."""
+    global _redis
+    if _redis is None:
+        settings = get_settings()
+        _redis = Redis(
+            url=settings.upstash_redis_rest_url,
+            token=settings.upstash_redis_rest_token,
+        )
+    return _redis
 
 
 async def cache_lookup(query: str) -> str | None:
@@ -34,14 +40,15 @@ async def cache_lookup(query: str) -> str | None:
     exceeds ``cache_similarity_threshold``.  Returns ``None`` on a miss.
     """
     settings = get_settings()
+    redis = _get_redis()
     query_embedding = await embed(query)
-    keys: list[str] = await _redis.keys(f"{_KEY_PREFIX}*")
+    keys: list[str] = await redis.keys(f"{_KEY_PREFIX}*")
 
     best_score = 0.0
     best_answer: str | None = None
 
     for key in keys:
-        raw = await _redis.get(key)
+        raw = await redis.get(key)
         if not raw:
             continue
         entry: dict[str, Any] = json.loads(raw)
@@ -62,6 +69,7 @@ async def cache_store(query: str, answer: str) -> None:
     Payload fields: query, answer, embedding (list[float]), stored_at (ISO-8601).
     """
     settings = get_settings()
+    redis = _get_redis()
     embedding = await embed(query)
     key = f"{_KEY_PREFIX}{hash(query) % 10 ** 10}"
     payload = json.dumps({
@@ -70,7 +78,7 @@ async def cache_store(query: str, answer: str) -> None:
         "embedding": embedding,
         "stored_at": datetime.now(timezone.utc).isoformat(),
     })
-    await _redis.setex(key, settings.cache_ttl_seconds, payload)
+    await redis.setex(key, settings.cache_ttl_seconds, payload)
 
 
 # ---------------------------------------------------------------------------
@@ -87,8 +95,9 @@ class SemanticCache:
 
     def __init__(self) -> None:
         self._settings = get_settings()
-        self._redis: aioredis.Redis = aioredis.from_url(
-            self._settings.redis_url, decode_responses=True
+        self._redis = Redis(
+            url=self._settings.upstash_redis_rest_url,
+            token=self._settings.upstash_redis_rest_token,
         )
         self._key_prefix = "deepsearch:cache:"
 

@@ -5,7 +5,6 @@ Every other module imports from here — no hardcoded values anywhere else.
 
 from functools import lru_cache
 
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,9 +21,10 @@ class Settings(BaseSettings):
     serper_api_key: str
 
     # ── Service URLs ───────────────────────────────────────────────────────
-    qdrant_url: str = Field(default="http://127.0.0.1:6333")
-    qdrant_api_key: str = Field(default="")
-    redis_url: str = Field(default="redis://127.0.0.1:6379")
+    qdrant_url: str
+    qdrant_api_key: str = ""
+    upstash_redis_rest_url: str
+    upstash_redis_rest_token: str
 
     # ── OpenRouter config ──────────────────────────────────────────────────
     openrouter_base_url: str = "https://openrouter.ai/api/v1"

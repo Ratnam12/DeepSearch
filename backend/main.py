@@ -15,7 +15,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAIError
 from pydantic import BaseModel
-from redis.exceptions import RedisError
 from sse_starlette.sse import EventSourceResponse
 
 from backend.agent import run_agent
@@ -50,10 +49,13 @@ def _error_message(exc: Exception) -> str:
 
 
 async def _safe_cache_lookup(question: str) -> str | None:
-    """Read cache without letting Redis/OpenAI failures break streaming."""
+    """Read cache without letting cache/OpenAI failures break streaming."""
     try:
         return await cache_lookup(question)
-    except (RedisError, OpenAIError) as exc:
+    except OpenAIError as exc:
+        logger.warning("Skipping cache lookup: %s", exc)
+        return None
+    except Exception as exc:
         logger.warning("Skipping cache lookup: %s", exc)
         return None
 
@@ -62,7 +64,9 @@ async def _safe_cache_store(question: str, answer: str) -> None:
     """Write cache opportunistically after a successful stream."""
     try:
         await cache_store(question, answer)
-    except (RedisError, OpenAIError) as exc:
+    except OpenAIError as exc:
+        logger.warning("Skipping cache store: %s", exc)
+    except Exception as exc:
         logger.warning("Skipping cache store: %s", exc)
 
 
