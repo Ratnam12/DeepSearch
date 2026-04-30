@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL;
 
@@ -13,31 +13,8 @@ type SseEventData = {
   ttft_ms?: number;
 };
 
-function parseSseChunk(
-  buffer: string,
-  onEvent: (event: string, data: SseEventData) => void,
-): string {
-  const normalizedBuffer = buffer.replace(/\r\n/g, "\n");
-  const parts = normalizedBuffer.split("\n\n");
-  const remainder = parts.pop() || "";
-
-  parts.forEach((part) => {
-    const lines = part.split("\n");
-    const eventLine = lines.find((line) => line.startsWith("event:"));
-    const dataLines = lines
-      .filter((line) => line.startsWith("data:"))
-      .map((line) => line.slice(5).trimStart());
-
-    if (!eventLine || dataLines.length === 0) {
-      return;
-    }
-
-    const event = eventLine.slice(6).trim();
-    const data = JSON.parse(dataLines.join("\n")) as SseEventData;
-    onEvent(event, data);
-  });
-
-  return remainder;
+function parseEventData(event: MessageEvent<string>): SseEventData {
+  return JSON.parse(event.data) as SseEventData;
 }
 
 export default function SearchInterface() {
@@ -47,6 +24,14 @@ export default function SearchInterface() {
   const [toolCalls, setToolCalls] = useState<string[]>([]);
   const [ttftMs, setTtftMs] = useState<number | null>(null);
   const [isSearching, setIsSearching] = useState(false);
+  const eventSourceRef = useRef<EventSource | null>(null);
+
+  const closeSearchStream = () => {
+    eventSourceRef.current?.close();
+    eventSourceRef.current = null;
+  };
+
+  useEffect(() => closeSearchStream, []);
 
   const handleEvent = (event: string, data: SseEventData) => {
     const message = data.message;
@@ -85,12 +70,53 @@ export default function SearchInterface() {
     }
   };
 
-  const runSearch = async () => {
+  const handleStreamError = (message: string) => {
+    setStatuses((current) => [...current, `Network error: ${message}`]);
+    setIsSearching(false);
+    closeSearchStream();
+  };
+
+  const streamUrl = (question: string): string => {
+    if (!API_BASE_URL) {
+      throw new Error("NEXT_PUBLIC_API_URL is not configured");
+    }
+
+    const url = new URL("/search/stream", `${API_BASE_URL}/`);
+    url.searchParams.set("question", question);
+    return url.toString();
+  };
+
+  const handleSourceError = (event: Event) => {
+    if ("data" in event && typeof event.data === "string") {
+      handleEvent("error", parseEventData(event as MessageEvent<string>));
+      closeSearchStream();
+      return;
+    }
+
+    handleStreamError("Search stream connection failed");
+  };
+
+  const bindStreamEvent = (source: EventSource, eventName: string) => {
+    source.addEventListener(eventName, (event) => {
+      try {
+        handleEvent(eventName, parseEventData(event as MessageEvent<string>));
+        if (eventName === "done") {
+          closeSearchStream();
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Invalid event";
+        handleStreamError(message);
+      }
+    });
+  };
+
+  const runSearch = () => {
     const trimmed = question.trim();
     if (!trimmed || isSearching) {
       return;
     }
 
+    closeSearchStream();
     setAnswer("");
     setStatuses([]);
     setToolCalls([]);
@@ -98,46 +124,15 @@ export default function SearchInterface() {
     setIsSearching(true);
 
     try {
-      if (!API_BASE_URL) {
-        throw new Error("NEXT_PUBLIC_API_URL is not configured");
-      }
-
-      const response = await fetch(`${API_BASE_URL}/search`, {
-        method: "POST",
-        headers: {
-          Accept: "text/event-stream",
-          "Cache-Control": "no-cache",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ question: trimmed }),
-      });
-
-      if (!response.ok || !response.body) {
-        throw new Error(`Search request failed (${response.status})`);
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let done = false;
-
-      while (!done) {
-        const result = await reader.read();
-        done = result.done;
-        buffer += decoder.decode(result.value || new Uint8Array(), {
-          stream: !done,
-        });
-        buffer = parseSseChunk(buffer, handleEvent);
-      }
-
-      if (buffer.trim()) {
-        parseSseChunk(`${buffer}\n\n`, handleEvent);
-      }
+      const source = new EventSource(streamUrl(trimmed));
+      eventSourceRef.current = source;
+      ["status", "tool_call", "cached", "token", "done"].forEach(
+        (eventName) => bindStreamEvent(source, eventName),
+      );
+      source.addEventListener("error", handleSourceError);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
-      setStatuses((current) => [...current, `Network error: ${message}`]);
-    } finally {
-      setIsSearching(false);
+      handleStreamError(message);
     }
   };
 

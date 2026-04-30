@@ -48,6 +48,20 @@ def _error_message(exc: Exception) -> str:
     return str(exc).strip() or exc.__class__.__name__
 
 
+def _stream_response(question: str) -> EventSourceResponse:
+    """Return a configured SSE response for one search question."""
+    settings = get_settings()
+    return EventSourceResponse(
+        _search_events(question),
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+        ping=settings.sse_ping_seconds,
+    )
+
+
 async def _safe_cache_lookup(question: str) -> str | None:
     """Read cache without letting cache/OpenAI failures break streaming."""
     try:
@@ -128,13 +142,12 @@ def build_app() -> FastAPI:
     @app.post("/search")
     async def search(request: SearchRequest) -> EventSourceResponse:
         """Stream a DeepSearch answer as server-sent events."""
-        return EventSourceResponse(
-            _search_events(request.question),
-            headers={
-                "Cache-Control": "no-cache, no-transform",
-                "X-Accel-Buffering": "no",
-            },
-        )
+        return _stream_response(request.question)
+
+    @app.get("/search/stream")
+    async def search_stream(question: str) -> EventSourceResponse:
+        """Stream a DeepSearch answer over a native EventSource endpoint."""
+        return _stream_response(question)
 
     return app
 

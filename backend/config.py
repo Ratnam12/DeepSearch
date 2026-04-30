@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     cache_similarity_threshold: float = 0.70
     cache_ttl_seconds: int = 3600
 
+    # ── Server-sent events ──────────────────────────────────────────────────
+    sse_ping_seconds: int = 10
+
     # ── Scraper ────────────────────────────────────────────────────────────
     scrape_timeout_seconds: int = 15
     scrape_concurrency: int = 3
