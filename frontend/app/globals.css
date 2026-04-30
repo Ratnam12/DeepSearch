@@ -1,34 +1,74 @@
-.search-shell {
+@import "tailwindcss";
+
+:root {
+  --background: #0b1120;
+  --foreground: #e5edf7;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.search-page,
+.auth-page {
   min-height: 100vh;
   background:
     radial-gradient(circle at top left, rgba(56, 189, 248, 0.18), transparent 34rem),
     radial-gradient(circle at bottom right, rgba(124, 58, 237, 0.2), transparent 30rem),
     #0b1120;
-  color: #e5edf7;
-  display: flex;
+}
+
+.search-page {
   align-items: center;
+  display: flex;
   justify-content: center;
-  font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
   padding: 56px 20px;
+  position: relative;
+}
+
+.auth-page {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  padding: 40px 20px;
+}
+
+.user-menu {
+  position: absolute;
+  right: 28px;
+  top: 28px;
+  z-index: 10;
 }
 
 .search-card {
-  width: min(1040px, 100%);
+  backdrop-filter: blur(18px);
   background: rgba(15, 23, 42, 0.86);
   border: 1px solid rgba(148, 163, 184, 0.24);
   border-radius: 28px;
   box-shadow: 0 30px 100px rgba(0, 0, 0, 0.45);
   padding: 40px;
-  backdrop-filter: blur(18px);
+  width: min(1040px, 100%);
 }
 
 .search-card h1 {
-  margin: 0;
   font-size: clamp(44px, 6vw, 72px);
   letter-spacing: -0.07em;
   line-height: 0.95;
+  margin: 0;
 }
 
 .subtitle {
@@ -43,12 +83,12 @@
 }
 
 .search-controls input {
-  flex: 1;
   background: rgba(2, 6, 23, 0.9);
   border: 1px solid rgba(148, 163, 184, 0.28);
   border-radius: 16px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
   color: #f8fafc;
+  flex: 1;
   font-size: 16px;
   outline: none;
   padding: 17px 18px;
@@ -132,9 +172,14 @@
 }
 
 @media (max-width: 640px) {
-  .search-shell {
+  .search-page {
     align-items: flex-start;
-    padding: 28px 14px;
+    padding: 84px 14px 28px;
+  }
+
+  .user-menu {
+    right: 18px;
+    top: 18px;
   }
 
   .search-card {
