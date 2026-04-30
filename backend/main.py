@@ -128,7 +128,13 @@ def build_app() -> FastAPI:
     @app.post("/search")
     async def search(request: SearchRequest) -> EventSourceResponse:
         """Stream a DeepSearch answer as server-sent events."""
-        return EventSourceResponse(_search_events(request.question))
+        return EventSourceResponse(
+            _search_events(request.question),
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     return app
 
