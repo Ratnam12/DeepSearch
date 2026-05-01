@@ -16,11 +16,12 @@ from typing import Any, AsyncGenerator
 import uvicorn
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from openai import OpenAIError
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from backend.agent import run_agent
+from backend.agent import run_agent, run_chat
 from backend.cache import cache_lookup, cache_store
 from backend.config import get_settings
 from backend.router import api_router
@@ -56,6 +57,18 @@ logger = logging.getLogger("deepsearch")
 
 class SearchRequest(BaseModel):
     question: str
+
+
+class ChatRequest(BaseModel):
+    """Body of ``POST /chat``.
+
+    ``messages`` is already in OpenAI chat-completion format — the Next.js
+    proxy is responsible for converting AI SDK UIMessages into this shape via
+    ``convertToModelMessages`` before forwarding here.
+    """
+
+    id: str
+    messages: list[dict[str, Any]]
 
 
 @asynccontextmanager
@@ -115,6 +128,97 @@ async def _safe_cache_store(question: str, answer: str) -> None:
         logger.warning("Skipping cache store: %s", exc)
     except Exception as exc:
         logger.warning("Skipping cache store: %s", exc)
+
+
+def _ui_part(obj: dict[str, Any]) -> bytes:
+    """Encode an AI SDK UI Message Stream Protocol part as an SSE line.
+
+    The protocol is plain SSE — each part is one ``data: {json}\\n\\n`` chunk.
+    """
+    return f"data: {json.dumps(obj, separators=(',', ':'))}\n\n".encode()
+
+
+async def _ui_message_stream(
+    messages: list[dict[str, Any]],
+) -> AsyncGenerator[bytes, None]:
+    """Translate ``run_chat`` events into AI SDK UI Message Stream Protocol.
+
+    The output is consumed by the Next.js ``useChat`` hook on the frontend.
+    Part types we emit:
+      - ``start`` once at the beginning with the assistant message id
+      - ``tool-input-available`` when the agent calls a tool (input ready)
+      - ``tool-output-available`` when a tool returns
+      - ``data-artifact`` for ``create_artifact`` payloads (rendered by the
+        side-panel artifact component on the frontend)
+      - ``text-start`` / ``text-delta`` / ``text-end`` for the streamed answer
+      - ``finish`` once at the end (success path)
+      - ``error`` if the agent raises before completion
+
+    Stream is terminated with ``data: [DONE]``.
+    """
+    msg_id = f"msg_{uuid.uuid4().hex}"
+    text_id = f"text_{uuid.uuid4().hex}"
+    text_started = False
+
+    yield _ui_part({"type": "start", "messageId": msg_id})
+
+    try:
+        async for event in run_chat(messages):
+            etype = event.get("type")
+            if etype == "tool_call":
+                args_raw = event.get("args") or "{}"
+                try:
+                    parsed_args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                except json.JSONDecodeError:
+                    parsed_args = {"_raw": args_raw}
+                yield _ui_part({
+                    "type": "tool-input-available",
+                    "toolCallId": event["call_id"],
+                    "toolName": event["name"],
+                    "input": parsed_args,
+                })
+            elif etype == "tool_result":
+                yield _ui_part({
+                    "type": "tool-output-available",
+                    "toolCallId": event["call_id"],
+                    "output": event.get("content", ""),
+                })
+            elif etype == "artifact":
+                yield _ui_part({
+                    "type": "data-artifact",
+                    "id": event["artifact_id"],
+                    "data": {
+                        "id": event["artifact_id"],
+                        "kind": event.get("kind", "text"),
+                        "title": event.get("title", "Untitled"),
+                        "content": event.get("content", ""),
+                    },
+                })
+            elif etype == "text":
+                token = str(event.get("content", ""))
+                if not token:
+                    continue
+                if not text_started:
+                    yield _ui_part({"type": "text-start", "id": text_id})
+                    text_started = True
+                yield _ui_part({
+                    "type": "text-delta",
+                    "id": text_id,
+                    "delta": token,
+                })
+    except Exception as exc:
+        logger.exception("Chat stream failed")
+        if text_started:
+            yield _ui_part({"type": "text-end", "id": text_id})
+            text_started = False
+        yield _ui_part({"type": "error", "errorText": _error_message(exc)})
+        yield b"data: [DONE]\n\n"
+        return
+
+    if text_started:
+        yield _ui_part({"type": "text-end", "id": text_id})
+    yield _ui_part({"type": "finish"})
+    yield b"data: [DONE]\n\n"
 
 
 async def _search_events(question: str) -> AsyncGenerator[dict[str, str], None]:
@@ -208,6 +312,25 @@ def build_app() -> FastAPI:
     async def search_stream(question: str) -> EventSourceResponse:
         """Stream a DeepSearch answer over a native EventSource endpoint."""
         return _stream_response(question)
+
+    @app.post("/chat")
+    async def chat(request: ChatRequest) -> StreamingResponse:
+        """Stream a DeepSearch answer in AI SDK UI Message Stream format.
+
+        The Next.js ``/api/chat`` route forwards messages to this endpoint
+        after Clerk auth + DB persistence, then pipes the response body
+        directly to the ``useChat`` hook.
+        """
+        return StreamingResponse(
+            _ui_message_stream(request.messages),
+            media_type="text/event-stream",
+            headers={
+                "x-vercel-ai-ui-message-stream": "v1",
+                "Cache-Control": "no-cache, no-transform",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     return app
 

@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import re
+import uuid
 from collections.abc import AsyncGenerator
 from time import perf_counter
 from typing import Any
@@ -80,6 +81,40 @@ TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_artifact",
+            "description": (
+                "Render a side-panel artifact for long-form output. Use this when the "
+                "answer is best presented as a standalone document rather than inline "
+                "chat text. Pick the kind:\n"
+                "- 'text' for research reports, summaries, or any markdown-formatted "
+                "long-form answer (>300 words).\n"
+                "- 'code' for code samples or scripts. Include the language as the "
+                "first line of content as a markdown fence header.\n"
+                "- 'sheet' for tabular data — content must be valid CSV.\n"
+                "Do not use for short conversational replies. After calling this tool, "
+                "your inline reply should be a 1-2 sentence summary referring the user "
+                "to the artifact."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["text", "code", "sheet"]},
+                    "title": {"type": "string", "description": "Short descriptive title."},
+                    "content": {
+                        "type": "string",
+                        "description": (
+                            "Full artifact content. Markdown for 'text', raw source "
+                            "for 'code', CSV for 'sheet'."
+                        ),
+                    },
+                },
+                "required": ["kind", "title", "content"],
+            },
+        },
+    },
 ]
 
 _SYSTEM_PROMPT = (
@@ -89,7 +124,10 @@ _SYSTEM_PROMPT = (
     "2. Never assert facts not present in the retrieved chunks.\n"
     "3. If the retrieved context is insufficient, call web_search to find relevant URLs,\n"
     "   then scrape_and_index to ingest each one, then retrieve_chunks before answering.\n"
-    "4. Always call retrieve_chunks at least once before composing your final answer."
+    "4. Always call retrieve_chunks at least once before composing your final answer.\n"
+    "5. For long-form output (research reports >300 words, code samples, or tabular\n"
+    "   data), call create_artifact instead of dumping it all inline. Keep the inline\n"
+    "   reply to a 1-2 sentence summary that points to the artifact."
 )
 
 
@@ -205,15 +243,23 @@ async def _execute_tool_calls(
     ``check_confidence`` before formatting. Low-confidence retrieval is passed
     back to the model as an insufficiency signal so it can search and scrape
     fresh sources before answering.
+
+    The ``create_artifact`` tool emits an extra ``artifact`` event containing
+    the structured artifact payload (kind/title/content). The UI bridge
+    converts this to an AI SDK ``data-artifact`` part so the side panel can
+    render it; the model itself just receives an acknowledgement string as the
+    tool result.
     """
     history.append(message.model_dump(exclude_none=True))
     for tool_call in message.tool_calls or []:
         fn_name = tool_call.function.name
         fn_args = tool_call.function.arguments
-        yield {"type": "tool_call", "name": fn_name, "args": fn_args}
+        call_id = tool_call.id
+        yield {"type": "tool_call", "call_id": call_id, "name": fn_name, "args": fn_args}
 
         started = perf_counter()
         logger.info("tool.start name=%s", fn_name)
+        contexts: list[str] = []
         try:
             if fn_name == "retrieve_chunks":
                 query = json.loads(fn_args).get("query", "")
@@ -229,9 +275,22 @@ async def _execute_tool_calls(
                         "scrape_and_index, and retrieve_chunks again before answering."
                     )
                     contexts = []
+            elif fn_name == "create_artifact":
+                args = json.loads(fn_args)
+                artifact_id = str(uuid.uuid4())
+                yield {
+                    "type": "artifact",
+                    "artifact_id": artifact_id,
+                    "kind": args.get("kind", "text"),
+                    "title": args.get("title", "Untitled"),
+                    "content": args.get("content", ""),
+                }
+                result = (
+                    f"Artifact rendered (id={artifact_id}, "
+                    f"kind={args.get('kind')}, title={args.get('title')!r})."
+                )
             else:
                 result = await _dispatch_tool(fn_name, fn_args)
-                contexts = []
         except Exception:
             duration_ms = int((perf_counter() - started) * 1000)
             logger.exception("tool.error name=%s duration_ms=%s", fn_name, duration_ms)
@@ -240,8 +299,14 @@ async def _execute_tool_calls(
         duration_ms = int((perf_counter() - started) * 1000)
         logger.info("tool.end name=%s duration_ms=%s", fn_name, duration_ms)
 
-        history.append({"role": "tool", "tool_call_id": tool_call.id, "content": result})
-        yield {"type": "tool_result", "name": fn_name, "content": result, "contexts": contexts}
+        history.append({"role": "tool", "tool_call_id": call_id, "content": result})
+        yield {
+            "type": "tool_result",
+            "call_id": call_id,
+            "name": fn_name,
+            "content": result,
+            "contexts": contexts,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -347,7 +412,73 @@ async def llm_judge(question: str, candidates: list[str], contexts: str) -> str:
     return candidates[0]
 
 
+def _latest_user_text(messages: list[dict[str, Any]]) -> str:
+    """Extract plain-text content from the most recent user message.
+
+    Handles both string content and OpenAI multimodal content arrays
+    (``[{"type": "text", "text": "..."}, {"type": "image_url", ...}]``) by
+    concatenating the text parts. Used for complexity routing and model
+    selection — vision parts are forwarded to the LLM but don't influence
+    routing.
+    """
+    for msg in reversed(messages):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return " ".join(
+                str(part.get("text", ""))
+                for part in content
+                if isinstance(part, dict) and part.get("type") == "text"
+            ).strip()
+    return ""
+
+
+async def run_chat(
+    messages: list[dict[str, Any]],
+) -> AsyncGenerator[dict[str, Any], None]:
+    """Multi-turn entry point: run the agent loop over a full messages array.
+
+    Messages must already be in OpenAI chat-completion format. The Next.js
+    proxy is responsible for translating AI SDK UIMessages into this format
+    via ``convertToModelMessages`` before forwarding.
+
+    Yields the same event dicts as :func:`run_agent`. Routing (complexity,
+    model selection) keys off the latest user message's text content.
+    """
+    if not messages:
+        return
+
+    question_text = _latest_user_text(messages)
+    history: list[dict[str, Any]] = [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        *messages,
+    ]
+    score = complexity_score(question_text) if question_text else 1
+    model = route_model(question_text) if question_text else FLASH
+
+    async for event in _agent_loop(history, score, model, question_text):
+        yield event
+
+
 async def run_agent(question: str) -> AsyncGenerator[dict[str, Any], None]:
+    """Single-question entry (legacy path used by ``/search`` SSE endpoint).
+
+    Wraps :func:`run_chat` with a one-element messages array. New callers
+    should use :func:`run_chat` directly.
+    """
+    async for event in run_chat([{"role": "user", "content": question}]):
+        yield event
+
+
+async def _agent_loop(
+    history: list[dict[str, Any]],
+    score: int,
+    model: str,
+    question_text: str,
+) -> AsyncGenerator[dict[str, Any], None]:
     """Agentic loop: tool-call until the model signals stop, then synthesize.
 
     For simple queries (complexity_score == 1) the existing single-pass
@@ -358,17 +489,10 @@ async def run_agent(question: str) -> AsyncGenerator[dict[str, Any], None]:
     Yields dicts with key ``type`` set to one of:
     - ``"tool_call"``   — the model is invoking a tool.
     - ``"tool_result"`` — the tool execution result.
+    - ``"artifact"``    — a structured artifact created via create_artifact.
     - ``"text"``        — a streamed/yielded chunk of the final answer.
     """
     settings = get_settings()
-    score = complexity_score(question)
-
-    history: list[dict[str, Any]] = [
-        {"role": "system", "content": _SYSTEM_PROMPT},
-        {"role": "user", "content": question},
-    ]
-
-    model = route_model(question)
     # Track the most recent retrieve_chunks result so the multi-candidate path
     # can pass grounded context into each SynthesizeAnswer call.
     last_context: str = ""
@@ -405,9 +529,17 @@ async def run_agent(question: str) -> AsyncGenerator[dict[str, Any], None]:
                 # The model skipped all tools and returned empty content on a
                 # complex query — proactively retrieve context so the
                 # multi-candidate path has grounded material to work with.
-                last_context, forced_contexts = await _retrieve_chunks_with_contexts(question)
+                last_context, forced_contexts = await _retrieve_chunks_with_contexts(question_text)
+                forced_call_id = f"forced-retrieve-{uuid.uuid4().hex[:8]}"
+                yield {
+                    "type": "tool_call",
+                    "call_id": forced_call_id,
+                    "name": "retrieve_chunks",
+                    "args": json.dumps({"query": question_text}),
+                }
                 yield {
                     "type": "tool_result",
+                    "call_id": forced_call_id,
                     "name": "retrieve_chunks",
                     "content": last_context,
                     "contexts": forced_contexts,
@@ -415,12 +547,12 @@ async def run_agent(question: str) -> AsyncGenerator[dict[str, Any], None]:
 
             if score == 3 and last_context:
                 # ── Multi-candidate path (complex queries) ──────────────────
-                candidates = await _generate_candidates(question, last_context)
+                candidates = await _generate_candidates(question_text, last_context)
                 # The judge sees the same retrieved context as the generators,
                 # so long answers can win when every claim is grounded.
                 if content:
                     candidates.append(content)
-                winner = await llm_judge(question, candidates, last_context)
+                winner = await llm_judge(question_text, candidates, last_context)
                 for word in re.split(r"(\s+)", winner):
                     if word:
                         yield {"type": "text", "content": word}
