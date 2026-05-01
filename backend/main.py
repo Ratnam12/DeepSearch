@@ -62,6 +62,11 @@ def _stream_response(question: str) -> EventSourceResponse:
     )
 
 
+def _cors_origins(raw_origins: str) -> list[str]:
+    """Parse comma-separated CORS origins from configuration."""
+    return [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+
+
 async def _safe_cache_lookup(question: str) -> str | None:
     """Read cache without letting cache/OpenAI failures break streaming."""
     try:
@@ -132,7 +137,7 @@ def build_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=_cors_origins(settings.cors_origins),
         allow_methods=["*"],
         allow_headers=["*"],
     )

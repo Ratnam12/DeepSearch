@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL;
+const API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_URL?.trim() || "http://localhost:8000";
 
 type SseEventData = {
   answer?: string;
@@ -77,10 +78,6 @@ export default function SearchInterface() {
   };
 
   const streamUrl = (question: string): string => {
-    if (!API_BASE_URL) {
-      throw new Error("NEXT_PUBLIC_API_URL is not configured");
-    }
-
     const url = new URL("/search/stream", `${API_BASE_URL}/`);
     url.searchParams.set("question", question);
     return url.toString();

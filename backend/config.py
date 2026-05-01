@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     upstash_redis_rest_url: str
     upstash_redis_rest_token: str
 
+    # ── HTTP app config ────────────────────────────────────────────────────
+    cors_origins: str = "*"
+
     # ── OpenRouter config ──────────────────────────────────────────────────
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     pro_model: str = "openai/gpt-5.5"
