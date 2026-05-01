@@ -59,6 +59,7 @@ async def test_search_stream_returns_sse_events(monkeypatch: pytest.MonkeyPatch)
     assert response.headers["content-type"].startswith("text/event-stream")
     assert response.headers["cache-control"] == "no-cache, no-transform"
     assert response.headers["x-accel-buffering"] == "no"
+    assert response.headers["x-request-id"]
     assert "event: status" in body
     assert "event: tool_call" in body
     assert "event: token" in body

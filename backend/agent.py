@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from collections.abc import AsyncGenerator
+from time import perf_counter
 from typing import Any
 
 import httpx
@@ -24,6 +26,9 @@ from backend.llm import synthesise_answer
 from backend.model_router import FLASH, log_cost, route_model
 from backend.security import sanitize
 from backend.dspy_modules import generate_candidate as _dspy_candidate
+
+
+logger = logging.getLogger("deepsearch")
 
 # Module-level client — base_url and api_key are read once from config.
 _settings = get_settings()
@@ -207,23 +212,33 @@ async def _execute_tool_calls(
         fn_args = tool_call.function.arguments
         yield {"type": "tool_call", "name": fn_name, "args": fn_args}
 
-        if fn_name == "retrieve_chunks":
-            query = json.loads(fn_args).get("query", "")
-            raw_chunks = await hybrid_search(query)
-            refusal = check_confidence(raw_chunks)
-            result = _format_chunks(raw_chunks)
-            contexts = _chunk_contexts(raw_chunks)
-            if refusal:
-                result = (
-                    f"{result}\n\n"
-                    f"Retrieval confidence warning: {refusal}\n"
-                    "The retrieved context is insufficient. Use web_search, "
-                    "scrape_and_index, and retrieve_chunks again before answering."
-                )
+        started = perf_counter()
+        logger.info("tool.start name=%s", fn_name)
+        try:
+            if fn_name == "retrieve_chunks":
+                query = json.loads(fn_args).get("query", "")
+                raw_chunks = await hybrid_search(query)
+                refusal = check_confidence(raw_chunks)
+                result = _format_chunks(raw_chunks)
+                contexts = _chunk_contexts(raw_chunks)
+                if refusal:
+                    result = (
+                        f"{result}\n\n"
+                        f"Retrieval confidence warning: {refusal}\n"
+                        "The retrieved context is insufficient. Use web_search, "
+                        "scrape_and_index, and retrieve_chunks again before answering."
+                    )
+                    contexts = []
+            else:
+                result = await _dispatch_tool(fn_name, fn_args)
                 contexts = []
-        else:
-            result = await _dispatch_tool(fn_name, fn_args)
-            contexts = []
+        except Exception:
+            duration_ms = int((perf_counter() - started) * 1000)
+            logger.exception("tool.error name=%s duration_ms=%s", fn_name, duration_ms)
+            raise
+
+        duration_ms = int((perf_counter() - started) * 1000)
+        logger.info("tool.end name=%s duration_ms=%s", fn_name, duration_ms)
 
         history.append({"role": "tool", "tool_call_id": tool_call.id, "content": result})
         yield {"type": "tool_result", "name": fn_name, "content": result, "contexts": contexts}

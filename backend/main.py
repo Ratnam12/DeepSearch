@@ -6,12 +6,15 @@ Single responsibility: wire up the ASGI app.
 
 import json
 import logging
+import uuid
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from time import perf_counter
 from typing import Any, AsyncGenerator
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAIError
 from pydantic import BaseModel
@@ -23,7 +26,32 @@ from backend.config import get_settings
 from backend.router import api_router
 
 
-logger = logging.getLogger(__name__)
+request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
+
+
+class JsonFormatter(logging.Formatter):
+    """Format log records as JSON for production log search."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
+            "level": record.levelname,
+            "msg": record.getMessage(),
+            "request_id": request_id_var.get(),
+            "logger": record.name,
+        }
+        if record.exc_info:
+            payload["exc"] = self.formatException(record.exc_info)
+        return json.dumps(payload)
+
+
+root = logging.getLogger()
+root.handlers.clear()
+handler = logging.StreamHandler()
+handler.setFormatter(JsonFormatter())
+root.addHandler(handler)
+root.setLevel(logging.INFO)
+logger = logging.getLogger("deepsearch")
 
 
 class SearchRequest(BaseModel):
@@ -135,9 +163,36 @@ def build_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    @app.middleware("http")
+    async def request_logging(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        rid = str(uuid.uuid4())[:8]
+        token = request_id_var.set(rid)
+        started = perf_counter()
+        logger.info("request.start path=%s method=%s", request.url.path, request.method)
+        try:
+            response = await call_next(request)
+        except Exception:
+            logger.exception("request.error")
+            request_id_var.reset(token)
+            raise
+
+        duration_ms = int((perf_counter() - started) * 1000)
+        logger.info(
+            "request.end status=%s duration_ms=%s",
+            response.status_code,
+            duration_ms,
+        )
+        request_id_var.reset(token)
+        response.headers["X-Request-Id"] = rid
+        return response
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_cors_origins(settings.cors_origins),
+        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
