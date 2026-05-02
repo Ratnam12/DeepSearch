@@ -13,7 +13,7 @@ export const PreviewAttachment = ({
   isUploading?: boolean;
   onRemove?: () => void;
 }) => {
-  const { name, url, contentType } = attachment;
+  const { name, url, contentType, pageCount } = attachment;
   const isImage = contentType?.startsWith("image");
   const isPdf = contentType === "application/pdf";
 
@@ -32,16 +32,21 @@ export const PreviewAttachment = ({
         />
       ) : isPdf ? (
         <a
-          className="flex size-full flex-col items-center justify-center gap-1.5 px-2 text-center text-muted-foreground transition-colors hover:text-foreground"
+          className="flex size-full flex-col items-center justify-center gap-1 px-2 text-center text-muted-foreground transition-colors hover:text-foreground"
           href={url}
           rel="noreferrer"
           target="_blank"
           title={name}
         >
-          <FileTextIcon className="size-6" />
+          <FileTextIcon className="size-6 shrink-0" />
           <span className="line-clamp-2 break-all text-[10px] leading-tight">
             {name}
           </span>
+          {typeof pageCount === "number" && (
+            <span className="rounded-full bg-foreground/10 px-1.5 py-0.5 text-[9px] tabular-nums text-muted-foreground">
+              {pageCount} {pageCount === 1 ? "page" : "pages"}
+            </span>
+          )}
         </a>
       ) : (
         <div className="flex size-full items-center justify-center text-muted-foreground text-xs">

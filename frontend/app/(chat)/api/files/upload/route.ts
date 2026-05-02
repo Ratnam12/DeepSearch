@@ -66,7 +66,22 @@ export async function POST(request: Request) {
         access: "public",
       });
 
-      return NextResponse.json(data);
+      let pageCount: number | undefined;
+      if (file.type === "application/pdf") {
+        try {
+          const { PDFDocument } = await import("pdf-lib");
+          const doc = await PDFDocument.load(fileBuffer, {
+            ignoreEncryption: true,
+          });
+          pageCount = doc.getPageCount();
+        } catch (err) {
+          // Best-effort metadata — a corrupt or password-protected PDF
+          // still uploads successfully; the model handles it downstream.
+          console.warn("pdf-lib could not parse uploaded PDF", { err });
+        }
+      }
+
+      return NextResponse.json({ ...data, pageCount });
     } catch (error) {
       // Surface the real Blob error so prod misconfigurations (missing
       // BLOB_READ_WRITE_TOKEN, quota, transient outage) don't hide
