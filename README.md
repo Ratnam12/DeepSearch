@@ -1,11 +1,10 @@
-<p align="center">
+<h1>
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="frontend/public/images/deepsearch-dark.png">
-    <img src="frontend/public/images/deepsearch-light.png" alt="DeepSearch logo" width="96">
+    <img src="frontend/public/images/deepsearch-light.png" alt="DeepSearch logo" width="36" align="left">
   </picture>
-</p>
-
-# DeepSearch
+  DeepSearch
+</h1>
 
 A research chatbot that searches the web, scrapes pages, indexes them in a vector store, and writes grounded, cited answers that stream into a side-panel artifact. Every claim in an answer can be traced back to a real source URL.
 
@@ -147,7 +146,7 @@ flowchart LR
     end
 
     subgraph evalLayer [Quality and optimization]
-        GoldenSet["147 golden examples"]
+        GoldenSet["50 golden examples"]
         EvalHarness["RAGAS eval harness"]
         Faithfulness["Faithfulness score"]
         Relevancy["Answer relevancy score"]
@@ -301,7 +300,7 @@ Most RAG projects are shipped and hoped to be correct. DeepSearch has a proper e
 
 ![RAGAS evaluation results](images/ragas_eval.png)
 
-### Scores on 147 golden examples
+### Scores on 50 golden examples
 
 | Metric | Score | Gate | Status |
 |---|---|---|---|
@@ -317,7 +316,7 @@ Most RAG projects are shipped and hoped to be correct. DeepSearch has a proper e
 - **Context precision**: checks whether the chunks that were retrieved are the right ones for the question. A score of 0.81 means retrieval is surfacing relevant material, not noise.
 - **Judge average**: a separate LLM judge (running on GPT-5.4 mini) scores each answer on helpfulness, clarity, and groundedness on a 1 to 5 scale. The 4.59 average shows the answers are well-structured and useful.
 
-The LLM judge lives in `backend/judge.py`. It scores three dimensions per answer and returns an overall average. The RAGAS harness in `tests/test_ragas.py` runs all 147 examples, calls the agent for each one, collects the retrieved contexts, scores with RAGAS, and asserts that all four metrics pass their gates. If any score drops below the threshold, the test fails and the build breaks. Quality cannot regress silently.
+The LLM judge lives in `backend/judge.py`. It scores three dimensions per answer and returns an overall average. The RAGAS harness in `tests/test_ragas.py` runs all 50 examples, calls the agent for each one, collects the retrieved contexts, scores with RAGAS, and asserts that all four metrics pass their gates. If any score drops below the threshold, the test fails and the build breaks. Quality cannot regress silently.
 
 To reproduce these results yourself:
 
@@ -341,7 +340,7 @@ DeepSearch uses [DSPy](https://github.com/stanfordnlp/dspy) to define the answer
 
 The optimization script `backend/optimise.py` runs **DSPy MIPROv2** to find the best prompt and few-shot demonstrations for `SynthesizeAnswer`. The setup:
 
-- Training set: 20 examples from the golden set in `tests/golden_set.json`.
+- DSPy training subset: 20 examples from the 50-example golden set in `tests/golden_set.json`.
 - Metric: RAGAS faithfulness score. MIPROv2 picks candidates whose answers are most grounded in the retrieved context.
 - Search: 10 instruction candidates evaluated with `auto="light"`.
 - Output: `optimised_synthesizer.json`, a compiled module with the winning prompt instructions and four few-shot demonstrations. This file ships with the project and is loaded at runtime.
@@ -448,7 +447,7 @@ frontend/
   lib/            AI models catalogue, DB queries, Drizzle schema, utilities
 
 tests/
-  golden_set.json 147 hand-curated question/answer pairs for evaluation
+  golden_set.json 50 hand-curated question/answer pairs for evaluation
   test_ragas.py   Full evaluation harness with RAGAS and LLM judge CI gates
   test_judge.py   Unit tests for the LLM judge scorer
 
@@ -463,4 +462,4 @@ requirements.txt            Python dependencies
 
 MIT. See the LICENSE files in `frontend/` and `chatbot/`.
 
-Built by [Ratnam Singh](https://github.com/ratnamsingh).
+Built by [Ratnam Singh](https://github.com/ratnamcodes).
