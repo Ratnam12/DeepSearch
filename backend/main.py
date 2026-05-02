@@ -123,25 +123,41 @@ def _cors_origins(raw_origins: str) -> list[str]:
 
 
 async def _safe_cache_lookup(question: str) -> str | None:
-    """Read cache without letting cache/OpenAI failures break streaming."""
+    """Read cache without letting cache/OpenAI failures break streaming.
+
+    Logs full tracebacks on failure so a silent miss from a broken
+    Upstash/embedding call is visible in production logs instead of
+    being swallowed by the broad except.
+    """
     try:
-        return await cache_lookup(question)
-    except OpenAIError as exc:
-        logger.warning("Skipping cache lookup: %s", exc)
+        result = await cache_lookup(question)
+        logger.info(
+            "cache.lookup query=%r hit=%s", question[:80], result is not None
+        )
+        return result
+    except OpenAIError:
+        logger.exception("cache.lookup failed (OpenAI)")
         return None
-    except Exception as exc:
-        logger.warning("Skipping cache lookup: %s", exc)
+    except Exception:
+        logger.exception("cache.lookup failed")
         return None
 
 
 async def _safe_cache_store(question: str, answer: str) -> None:
-    """Write cache opportunistically after a successful stream."""
+    """Write cache opportunistically after a successful stream.
+
+    Logs full tracebacks on failure so a silent store failure is
+    visible in production logs instead of being swallowed.
+    """
     try:
         await cache_store(question, answer)
-    except OpenAIError as exc:
-        logger.warning("Skipping cache store: %s", exc)
-    except Exception as exc:
-        logger.warning("Skipping cache store: %s", exc)
+        logger.info(
+            "cache.store query=%r answer_len=%d", question[:80], len(answer)
+        )
+    except OpenAIError:
+        logger.exception("cache.store failed (OpenAI)")
+    except Exception:
+        logger.exception("cache.store failed")
 
 
 def _ui_part(obj: dict[str, Any]) -> bytes:
@@ -616,6 +632,20 @@ def build_app() -> FastAPI:
     )
 
     app.include_router(api_router, prefix="/api/v1")
+
+    @app.get("/__version")
+    async def version() -> dict[str, str]:
+        """Return the git commit SHA of the running build.
+
+        Used to confirm which revision is live in a given environment
+        (Railway sets ``RAILWAY_GIT_COMMIT_SHA`` automatically).
+        """
+        import os as _os
+
+        return {
+            "sha": _os.environ.get("RAILWAY_GIT_COMMIT_SHA", "unknown"),
+            "short": _os.environ.get("RAILWAY_GIT_COMMIT_SHA", "unknown")[:7],
+        }
 
     @app.post("/search")
     async def search(request: SearchRequest) -> EventSourceResponse:
