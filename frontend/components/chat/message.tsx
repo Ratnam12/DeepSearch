@@ -5,15 +5,8 @@ import type { ChatMessage } from "@/lib/types";
 import { cn, sanitizeText } from "@/lib/utils";
 import { MessageContent, MessageResponse } from "../ai-elements/message";
 import { Shimmer } from "../ai-elements/shimmer";
-import {
-  Tool,
-  ToolContent,
-  ToolHeader,
-  ToolInput,
-  ToolOutput,
-} from "../ai-elements/tool";
 import { useDataStream } from "./data-stream-provider";
-import { DocumentToolResult } from "./document";
+import { DeepSearchToolStep } from "./deepsearch-tool-step";
 import { DocumentPreview } from "./document-preview";
 import { SparklesIcon } from "./icons";
 import { MessageActions } from "./message-actions";
@@ -176,11 +169,9 @@ const PurePreviewMessage = ({
     }
 
     // Catch-all for DeepSearch's backend tools (web_search,
-    // retrieve_chunks, scrape_and_index, create_artifact). The
-    // chatbot template hard-codes a per-tool component for each known
-    // tool — anything else would render as `null` and stay invisible.
-    // This makes every tool call show up as a collapsible step with
-    // input + output panes so the user can watch the agent work.
+    // retrieve_chunks, scrape_and_index, create_artifact). Renders as a
+    // single subtle status line — see DeepSearchToolStep for the design
+    // rationale.
     if (type.startsWith("tool-")) {
       const toolPart = part as {
         toolCallId?: string;
@@ -189,38 +180,23 @@ const PurePreviewMessage = ({
         output?: unknown;
       };
       const toolCallId = toolPart.toolCallId ?? `${key}-tool`;
-      const state =
-        (toolPart.state as
-          | "input-streaming"
-          | "input-available"
-          | "approval-requested"
-          | "approval-responded"
-          | "output-available"
-          | "output-error"
-          | "output-denied") ?? "input-available";
       return (
-        <div className="w-[min(100%,520px)]" key={toolCallId}>
-          <Tool className="w-full" defaultOpen={false}>
-            <ToolHeader state={state} type={type as `tool-${string}`} />
-            <ToolContent>
-              {toolPart.input !== undefined && toolPart.input !== null && (
-                <ToolInput input={toolPart.input} />
-              )}
-              {toolPart.output !== undefined && toolPart.output !== null && (
-                <ToolOutput
-                  errorText={undefined}
-                  output={
-                    <div className="max-h-[400px] overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 p-3 text-[12px] text-muted-foreground">
-                      {typeof toolPart.output === "string"
-                        ? toolPart.output
-                        : JSON.stringify(toolPart.output, null, 2)}
-                    </div>
-                  }
-                />
-              )}
-            </ToolContent>
-          </Tool>
-        </div>
+        <DeepSearchToolStep
+          input={toolPart.input}
+          key={toolCallId}
+          output={toolPart.output}
+          state={
+            (toolPart.state as
+              | "input-streaming"
+              | "input-available"
+              | "approval-requested"
+              | "approval-responded"
+              | "output-available"
+              | "output-error"
+              | "output-denied") ?? "input-available"
+          }
+          type={type}
+        />
       );
     }
 

@@ -2,7 +2,10 @@ import { z } from "zod";
 
 const textPartSchema = z.object({
   type: z.enum(["text"]),
-  text: z.string().min(1).max(2000),
+  // Research queries often include pasted abstracts, code, or
+  // multi-paragraph context — the chatbot template's 2000-char cap
+  // (~300 words) was tuned for casual chat. Bumped to ~5000 words.
+  text: z.string().min(1).max(32_000),
 });
 
 const filePartSchema = z.object({

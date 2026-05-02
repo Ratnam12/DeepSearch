@@ -3,7 +3,11 @@ import { createClient } from "redis";
 import { isProductionEnvironment } from "@/lib/constants";
 import { ChatbotError } from "@/lib/errors";
 
-const MAX_MESSAGES = 10;
+// IP-based rate limit, only active when REDIS_URL is set (no-op otherwise).
+// 10/hour was the chatbot template's casual-chat cap; researchers iterate
+// far more than that. Set high enough that real users don't hit it under
+// normal use, low enough to deter bot spam.
+const MAX_MESSAGES = 200;
 const TTL_SECONDS = 60 * 60;
 
 let client: ReturnType<typeof createClient> | null = null;

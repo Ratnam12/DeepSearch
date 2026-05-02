@@ -19,18 +19,21 @@ import { convertToUIMessages, generateUUID } from "@/lib/utils";
 import { generateTitleFromUserMessage } from "../../actions";
 import { type PostRequestBody, postRequestBodySchema } from "./schema";
 
-export const maxDuration = 60;
+// 5 minutes — the Vercel Hobby + Fluid Compute ceiling. DeepSearch's
+// agent loop (web_search -> Playwright scrape -> retrieve_chunks, often
+// looped 2-3x) can take 60-180s for complex multi-hop queries. The
+// chatbot template hardcoded `maxDuration = 60` against the pre-Fluid
+// Hobby cap; we get the full 300s for free.
+export const maxDuration = 300;
 
 const BACKEND_URL =
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "") ??
   "http://localhost:8000";
 
-// Vercel Hobby plan caps serverless functions at 60 s. Most DeepSearch
-// queries finish well under that, but multi-hop research (web_search ->
-// scrape_and_index -> retrieve_chunks, sometimes more than once) can run
-// long. We pin the timeout slightly under the platform limit so we get a
-// clean error instead of a cold kill.
-const BACKEND_TIMEOUT_MS = 55_000;
+// Pinned slightly under maxDuration so we surface a clean offline:chat
+// error to the client instead of letting Vercel kill the function with
+// no response.
+const BACKEND_TIMEOUT_MS = 290_000;
 
 export async function POST(request: Request) {
   let requestBody: PostRequestBody;
