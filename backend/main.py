@@ -251,6 +251,75 @@ def _is_cache_eligible(messages: list[dict[str, Any]]) -> bool:
     return False
 
 
+async def _replay_cached_payload(
+    cached: str,
+    *,
+    msg_id: str,
+    text_id: str,
+) -> AsyncGenerator[bytes, None]:
+    """Replay a cached answer as AI SDK UI Message Stream parts.
+
+    The cached string is the JSON payload we wrote in
+    :func:`_ui_message_stream`: ``{"text": str, "artifacts": [...], "citations": [...]}``.
+    On a hit we emit ``start``, the optional text body, citations (so the
+    frontend has the [N] → URL mapping before artifacts render), each
+    artifact (with a fresh id so each chat persists its own Document row
+    instead of versioning the original), then ``finish`` + ``[DONE]``.
+
+    Falls back to treating the cached string as plain text for any
+    payload that doesn't parse as the structured shape. No legacy
+    plain-text entries exist today, but the fallback keeps a stale
+    payload from breaking the stream.
+    """
+    yield _ui_part({"type": "start", "messageId": msg_id})
+
+    payload: dict[str, Any] | None = None
+    try:
+        parsed = json.loads(cached)
+        if isinstance(parsed, dict) and ("text" in parsed or "artifacts" in parsed):
+            payload = parsed
+    except (json.JSONDecodeError, TypeError):
+        payload = None
+
+    if payload is None:
+        yield _ui_part({"type": "text-start", "id": text_id})
+        yield _ui_part({"type": "text-delta", "id": text_id, "delta": cached})
+        yield _ui_part({"type": "text-end", "id": text_id})
+        yield _ui_part({"type": "finish"})
+        yield b"data: [DONE]\n\n"
+        return
+
+    cached_text = (payload.get("text") or "").strip()
+    if cached_text:
+        yield _ui_part({"type": "text-start", "id": text_id})
+        yield _ui_part({"type": "text-delta", "id": text_id, "delta": cached_text})
+        yield _ui_part({"type": "text-end", "id": text_id})
+
+    cached_citations = payload.get("citations") or []
+    if cached_citations:
+        yield _ui_part({
+            "type": "data-citations",
+            "id": f"cite_{uuid.uuid4().hex}",
+            "data": cached_citations,
+        })
+
+    for artifact in payload.get("artifacts") or []:
+        if not isinstance(artifact, dict):
+            continue
+        # Re-issue a fresh artifact id per replay so each cached chat
+        # persists its own Document row instead of stacking versions
+        # under the original artifact's id.
+        replay_artifact = {**artifact, "id": str(uuid.uuid4())}
+        yield _ui_part({
+            "type": "data-artifact",
+            "id": replay_artifact["id"],
+            "data": replay_artifact,
+        })
+
+    yield _ui_part({"type": "finish"})
+    yield b"data: [DONE]\n\n"
+
+
 async def _ui_message_stream(
     messages: list[dict[str, Any]],
     model: str | None = None,
@@ -277,6 +346,12 @@ async def _ui_message_stream(
     text_started = False
     artifact_emitted = False
     text_buffer: list[str] = []
+    # Artifacts emitted during this stream — captured so the cache payload
+    # can replay them later. Without this the artifact's substantive
+    # content is invisible to the cache and we end up storing only the
+    # short text preamble (or nothing at all) for an answer the user
+    # actually saw as a full side-panel artifact.
+    artifacts_emitted: list[dict[str, Any]] = []
     # Latest citations from retrieve_chunks. Used to (a) linkify [N]
     # markers inside the artifact's body, and (b) append a Sources
     # section if the model forgot one. We keep the most recent set
@@ -291,14 +366,12 @@ async def _ui_message_stream(
     query_text = _extract_latest_user_text(messages) if _is_cache_eligible(messages) else ""
 
     if query_text:
-        cached_answer = await _safe_cache_lookup(query_text)
-        if cached_answer is not None:
-            yield _ui_part({"type": "start", "messageId": msg_id})
-            yield _ui_part({"type": "text-start", "id": text_id})
-            yield _ui_part({"type": "text-delta", "id": text_id, "delta": cached_answer})
-            yield _ui_part({"type": "text-end", "id": text_id})
-            yield _ui_part({"type": "finish"})
-            yield b"data: [DONE]\n\n"
+        cached_payload_str = await _safe_cache_lookup(query_text)
+        if cached_payload_str is not None:
+            async for chunk in _replay_cached_payload(
+                cached_payload_str, msg_id=msg_id, text_id=text_id
+            ):
+                yield chunk
             return
 
     yield _ui_part({"type": "start", "messageId": msg_id})
@@ -336,15 +409,17 @@ async def _ui_message_stream(
                 # Sources block would corrupt the artifact.
                 if kind == "text" and latest_citations:
                     content = _inject_citations(content, latest_citations)
+                artifact_data = {
+                    "id": event["artifact_id"],
+                    "kind": kind,
+                    "title": event.get("title", "Untitled"),
+                    "content": content,
+                }
+                artifacts_emitted.append(artifact_data)
                 yield _ui_part({
                     "type": "data-artifact",
                     "id": event["artifact_id"],
-                    "data": {
-                        "id": event["artifact_id"],
-                        "kind": kind,
-                        "title": event.get("title", "Untitled"),
-                        "content": content,
-                    },
+                    "data": artifact_data,
                 })
             elif etype == "citations":
                 # [N] → URL mapping from the most recent retrieve_chunks.
@@ -386,8 +461,6 @@ async def _ui_message_stream(
         yield _ui_part({"type": "text-end", "id": text_id})
 
     full_text = "".join(text_buffer).strip()
-    if query_text and full_text:
-        await _safe_cache_store(query_text, full_text)
 
     # Safety net: if the agent answered substantively but didn't call
     # create_artifact (sometimes the model just forgets despite the
@@ -397,16 +470,32 @@ async def _ui_message_stream(
     # ("capital of France?") stay inline-only.
     if not artifact_emitted and len(full_text.split()) >= 120:
         artifact_id = str(uuid.uuid4())
+        promoted_artifact = {
+            "id": artifact_id,
+            "kind": "text",
+            "title": fallback_title,
+            "content": full_text,
+        }
+        artifacts_emitted.append(promoted_artifact)
         yield _ui_part({
             "type": "data-artifact",
             "id": artifact_id,
-            "data": {
-                "id": artifact_id,
-                "kind": "text",
-                "title": fallback_title,
-                "content": full_text,
-            },
+            "data": promoted_artifact,
         })
+
+    # Cache a structured payload (text + artifacts + citations) so a hit
+    # can replay the full UI shape, not just a wall of text. The previous
+    # code cached only ``full_text``, which was empty whenever the agent
+    # put the answer in an artifact (the common path per the system
+    # prompt) — so the cache stayed empty and every query re-ran the
+    # full pipeline.
+    if query_text and (full_text or artifacts_emitted):
+        cache_payload = json.dumps({
+            "text": full_text,
+            "artifacts": artifacts_emitted,
+            "citations": latest_citations,
+        })
+        await _safe_cache_store(query_text, cache_payload)
 
     yield _ui_part({"type": "finish"})
     yield b"data: [DONE]\n\n"
