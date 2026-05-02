@@ -489,6 +489,8 @@ def _latest_user_text(messages: list[dict[str, Any]]) -> str:
 async def run_chat(
     messages: list[dict[str, Any]],
     model: str | None = None,
+    session_id: str | None = None,
+    user_id: str | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Multi-turn entry point: run the agent loop over a full messages array.
 
@@ -526,7 +528,14 @@ async def run_chat(
         else (route_model(question_text) if question_text else FLASH)
     )
 
-    async for event in _agent_loop(history, score, chosen_model, question_text):
+    async for event in _agent_loop(
+        history,
+        score,
+        chosen_model,
+        question_text,
+        session_id=session_id,
+        user_id=user_id,
+    ):
         yield event
 
 
@@ -544,6 +553,8 @@ async def _stream_completion(
     model: str,
     history: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None,
+    session_id: str | None = None,
+    user_id: str | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Make a streaming chat-completion call to OpenRouter.
 
@@ -557,6 +568,12 @@ async def _stream_completion(
     Tool-call deltas are merged by index across chunks; OpenAI's streaming
     protocol splits a single tool call's arguments into multiple chunks
     keyed by ``index`` rather than ``id``.
+
+    ``session_id`` / ``user_id`` are forwarded as OpenRouter session
+    tracking metadata via ``extra_body`` (the openai-python SDK strips
+    unknown top-level kwargs, so OR-specific fields have to ride in
+    ``extra_body``). They show up in the OR dashboard's Sessions tab and
+    let us see cost-per-conversation rather than just per-generation.
     """
     kwargs: dict[str, Any] = {
         "model": model,
@@ -567,6 +584,16 @@ async def _stream_completion(
     if tools:
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
+
+    extra_body: dict[str, Any] = {}
+    if session_id:
+        extra_body["session_id"] = session_id
+    if user_id:
+        # OpenRouter caps `user` at 128 chars; Clerk ids are ~32, so this
+        # is a no-op safety guard.
+        extra_body["user"] = user_id[:128]
+    if extra_body:
+        kwargs["extra_body"] = extra_body
 
     response_stream = await _openai_client.chat.completions.create(**kwargs)
 
@@ -656,6 +683,8 @@ async def _agent_loop(
     score: int,
     model: str,
     question_text: str,
+    session_id: str | None = None,
+    user_id: str | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Agentic loop: tool-call until the model signals stop, then synthesize.
 
@@ -686,7 +715,11 @@ async def _agent_loop(
         finish_reason: str | None = None
 
         async for event in _stream_completion(
-            model=model, history=history, tools=TOOLS
+            model=model,
+            history=history,
+            tools=TOOLS,
+            session_id=session_id,
+            user_id=user_id,
         ):
             if event.get("type") == "_done":
                 streamed_message = event["message"]

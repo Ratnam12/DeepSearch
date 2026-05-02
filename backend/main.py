@@ -70,11 +70,18 @@ class ChatRequest(BaseModel):
     dropdown (e.g. ``openai/gpt-5.5``, ``google/gemini-3.1-pro``). When
     omitted or unknown, the agent falls back to its complexity-based router
     (``flash_model`` for simple queries, ``pro_model`` for complex).
+
+    ``session_id`` and ``user_id`` are forwarded to OpenRouter as session
+    tracking metadata so each conversation's generations are grouped
+    under one session in the OpenRouter dashboard. ``session_id`` is the
+    chat row id; ``user_id`` is the Clerk user id.
     """
 
     id: str
     messages: list[dict[str, Any]]
     model: str | None = None
+    session_id: str | None = None
+    user_id: str | None = None
 
 
 @asynccontextmanager
@@ -147,6 +154,8 @@ def _ui_part(obj: dict[str, Any]) -> bytes:
 async def _ui_message_stream(
     messages: list[dict[str, Any]],
     model: str | None = None,
+    session_id: str | None = None,
+    user_id: str | None = None,
 ) -> AsyncGenerator[bytes, None]:
     """Translate ``run_chat`` events into AI SDK UI Message Stream Protocol.
 
@@ -176,7 +185,9 @@ async def _ui_message_stream(
     yield _ui_part({"type": "start", "messageId": msg_id})
 
     try:
-        async for event in run_chat(messages, model=model):
+        async for event in run_chat(
+            messages, model=model, session_id=session_id, user_id=user_id
+        ):
             etype = event.get("type")
             if etype == "tool_call":
                 args_raw = event.get("args") or "{}"
@@ -403,8 +414,18 @@ def build_app() -> FastAPI:
         after Clerk auth + DB persistence, then pipes the response body
         directly to the ``useChat`` hook.
         """
+        # Default the OpenRouter session id to the chat id when the
+        # caller didn't pass one explicitly. Keeps every generation in a
+        # given chat thread grouped together in the OR dashboard even
+        # for legacy clients that haven't been updated.
+        session_id = request.session_id or request.id
         return StreamingResponse(
-            _ui_message_stream(request.messages, model=request.model),
+            _ui_message_stream(
+                request.messages,
+                model=request.model,
+                session_id=session_id,
+                user_id=request.user_id,
+            ),
             media_type="text/event-stream",
             headers={
                 "x-vercel-ai-ui-message-stream": "v1",
