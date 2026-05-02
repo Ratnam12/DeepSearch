@@ -255,6 +255,25 @@ async def _dispatch_tool(name: str, arguments: str) -> str:
             return f"Unknown tool: {name}"
 
 
+def _citations_from_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build a [N] → source URL map from a retrieve_chunks result.
+
+    The agent emits these as a ``citations`` event so the frontend can
+    turn the bracketed indices in the streamed answer into clickable
+    source links. Indices match the 1-based ``[N]`` markers used by
+    :func:`_format_chunks`.
+    """
+    return [
+        {
+            "index": i + 1,
+            "url": str(chunk.get("source_url", "")),
+            "score": float(chunk.get("rerank_score", chunk.get("score", 0.0))),
+        }
+        for i, chunk in enumerate(chunks)
+        if chunk.get("source_url")
+    ]
+
+
 async def _execute_tool_calls(
     message: Any,
     history: list[dict[str, Any]],
@@ -297,6 +316,15 @@ async def _execute_tool_calls(
                         "scrape_and_index, and retrieve_chunks again before answering."
                     )
                     contexts = []
+                else:
+                    # Surface the [N] → URL mapping so the frontend can
+                    # turn bracketed citations in the streamed answer
+                    # into clickable links. Each retrieve_chunks call
+                    # overwrites the previous mapping — the model uses
+                    # the indices from the latest retrieval.
+                    citations = _citations_from_chunks(raw_chunks)
+                    if citations:
+                        yield {"type": "citations", "items": citations}
             elif fn_name == "create_artifact":
                 args = json.loads(fn_args)
                 artifact_id = str(uuid.uuid4())

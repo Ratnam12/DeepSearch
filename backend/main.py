@@ -208,6 +208,17 @@ async def _ui_message_stream(
                         "content": event.get("content", ""),
                     },
                 })
+            elif etype == "citations":
+                # [N] → URL mapping from the most recent retrieve_chunks.
+                # Frontend uses this to make bracketed citations in the
+                # streamed answer clickable. Multiple events are allowed
+                # — the frontend keeps the latest one.
+                citations_id = f"cite_{uuid.uuid4().hex}"
+                yield _ui_part({
+                    "type": "data-citations",
+                    "id": citations_id,
+                    "data": event.get("items", []),
+                })
             elif etype == "text":
                 token = str(event.get("content", ""))
                 if not token:
