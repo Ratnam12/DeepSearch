@@ -6,6 +6,7 @@ Single responsibility: wire up the ASGI app.
 
 import json
 import logging
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -151,6 +152,67 @@ def _ui_part(obj: dict[str, Any]) -> bytes:
     return f"data: {json.dumps(obj, separators=(',', ':'))}\n\n".encode()
 
 
+_CITATION_PATTERN = re.compile(r"\[(\d+)\]")
+_SOURCES_HEADER_PATTERN = re.compile(r"(?im)^#+\s*sources?\b")
+
+
+def _domain_label(url: str) -> str:
+    """Best-effort short label for a source URL — e.g. 'arxiv.org'."""
+    try:
+        without_scheme = re.sub(r"^https?://(?:www\.)?", "", url)
+        return without_scheme.split("/")[0] or url
+    except Exception:
+        return url
+
+
+def _inject_citations(content: str, citations: list[dict[str, Any]]) -> str:
+    """Make bracketed citations clickable and ensure a Sources section.
+
+    Two passes:
+
+    1. Replace each ``[N]`` in the body with a markdown link
+       ``[\\[N\\]](url)`` so the artifact renderer turns it into a real
+       hyperlink while still showing ``[N]`` as the visible label.
+    2. Append a ``## Sources`` markdown block at the end if the model
+       didn't already write one. This is the safety-net the system
+       prompt asks the model to handle but doesn't always remember to,
+       especially on follow-up turns.
+    """
+    if not citations:
+        return content
+
+    url_map: dict[int, str] = {}
+    for citation in citations:
+        idx = citation.get("index")
+        url = citation.get("url")
+        if isinstance(idx, int) and isinstance(url, str) and url:
+            url_map[idx] = url
+
+    if not url_map:
+        return content
+
+    def _replace_marker(match: re.Match[str]) -> str:
+        idx = int(match.group(1))
+        url = url_map.get(idx)
+        if not url:
+            return match.group(0)
+        return f"[\\[{idx}\\]]({url})"
+
+    processed = _CITATION_PATTERN.sub(_replace_marker, content)
+
+    if _SOURCES_HEADER_PATTERN.search(processed):
+        return processed
+
+    sources_lines = ["", "", "## Sources", ""]
+    for citation in sorted(citations, key=lambda c: c.get("index", 0)):
+        idx = citation.get("index")
+        url = citation.get("url")
+        if not (isinstance(idx, int) and isinstance(url, str) and url):
+            continue
+        sources_lines.append(f"{idx}. [{_domain_label(url)}]({url})")
+    return processed + "\n".join(sources_lines)
+
+
 async def _ui_message_stream(
     messages: list[dict[str, Any]],
     model: str | None = None,
@@ -177,6 +239,11 @@ async def _ui_message_stream(
     text_started = False
     artifact_emitted = False
     text_buffer: list[str] = []
+    # Latest citations from retrieve_chunks. Used to (a) linkify [N]
+    # markers inside the artifact's body, and (b) append a Sources
+    # section if the model forgot one. We keep the most recent set
+    # because that's what the model used to ground the answer.
+    latest_citations: list[dict[str, Any]] = []
     # When we auto-promote streamed text into an artifact, we want the
     # title to reflect what the user actually asked rather than a generic
     # "Research notes". Pull a summary of the last user message up front.
@@ -209,14 +276,22 @@ async def _ui_message_stream(
                 })
             elif etype == "artifact":
                 artifact_emitted = True
+                kind = event.get("kind", "text")
+                content = event.get("content", "")
+                # Linkify [N] and append a Sources block — text artifacts
+                # only. Code/sheet kinds are content-shaped where bracket
+                # markers are not citations and inserting a markdown
+                # Sources block would corrupt the artifact.
+                if kind == "text" and latest_citations:
+                    content = _inject_citations(content, latest_citations)
                 yield _ui_part({
                     "type": "data-artifact",
                     "id": event["artifact_id"],
                     "data": {
                         "id": event["artifact_id"],
-                        "kind": event.get("kind", "text"),
+                        "kind": kind,
                         "title": event.get("title", "Untitled"),
-                        "content": event.get("content", ""),
+                        "content": content,
                     },
                 })
             elif etype == "citations":
@@ -224,11 +299,14 @@ async def _ui_message_stream(
                 # Frontend uses this to make bracketed citations in the
                 # streamed answer clickable. Multiple events are allowed
                 # — the frontend keeps the latest one.
+                items = event.get("items", [])
+                if items:
+                    latest_citations = items
                 citations_id = f"cite_{uuid.uuid4().hex}"
                 yield _ui_part({
                     "type": "data-citations",
                     "id": citations_id,
-                    "data": event.get("items", []),
+                    "data": items,
                 })
             elif etype == "text":
                 token = str(event.get("content", ""))
