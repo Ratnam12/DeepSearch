@@ -20,9 +20,13 @@ const filePartSchema = z.object({
     "application/pdf",
   ]),
   displayUrl: z.string().min(1).optional(),
-  name: z.string().min(1).max(100),
+  filename: z.string().min(1).max(255).optional(),
+  name: z.string().min(1).max(255).optional(),
   pageCount: z.number().int().positive().optional(),
+  pathname: z.string().min(1).max(1024).optional(),
   url: z.string().url(),
+}).refine((part) => part.filename || part.name, {
+  message: "File part must include a filename",
 });
 
 const partSchema = z.union([textPartSchema, filePartSchema]);

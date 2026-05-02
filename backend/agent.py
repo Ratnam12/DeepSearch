@@ -537,11 +537,20 @@ def normalise_messages_for_openrouter(
                     "image_url": {"url": url},
                 })
             elif ptype == "file":
+                data = part.get("data") or part.get("url") or ""
+                media_type = str(
+                    part.get("mediaType") or part.get("media_type") or ""
+                )
+                if media_type.startswith("image/"):
+                    new_content.append({
+                        "type": "image_url",
+                        "image_url": {"url": str(data)},
+                    })
+                    continue
                 # Already-OpenAI shape: pass through.
                 if isinstance(part.get("file"), dict):
                     new_content.append(part)
                     continue
-                data = part.get("data") or part.get("url") or ""
                 filename = part.get("filename") or part.get("name") or "file"
                 new_content.append({
                     "type": "file",

@@ -88,6 +88,24 @@ const ALLOWED_MIME_TYPES = new Set([
   "application/pdf",
 ]);
 
+function isSupportedAttachment(file: File): boolean {
+  if (ALLOWED_MIME_TYPES.has(file.type)) {
+    return true;
+  }
+
+  const name = file.name.toLowerCase();
+  return (
+    name.endsWith(".pdf") ||
+    name.endsWith(".png") ||
+    name.endsWith(".jpg") ||
+    name.endsWith(".jpeg") ||
+    name.endsWith(".webp") ||
+    name.endsWith(".gif") ||
+    name.endsWith(".heic") ||
+    name.endsWith(".heif")
+  );
+}
+
 function PureMultimodalInput({
   chatId,
   input,
@@ -238,8 +256,10 @@ function PureMultimodalInput({
   );
   const capsForVision: Record<string, ModelCapabilities> | undefined =
     modelsDataForVision?.capabilities ?? modelsDataForVision;
-  const selectedModelHasVision =
-    capsForVision?.[selectedModelId]?.vision ?? false;
+  const selectedCapabilities = capsForVision?.[selectedModelId];
+  const selectedModelHasVision = selectedCapabilities
+    ? selectedCapabilities.image || selectedCapabilities.vision
+    : true;
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadQueue, setUploadQueue] = useState<string[]>([]);
@@ -287,21 +307,22 @@ function PureMultimodalInput({
       `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/chat/${chatId}`
     );
 
+    const text = input.trim();
+    const fileParts = attachments.map((attachment) => ({
+      displayUrl: attachment.url,
+      filename: attachment.name,
+      mediaType: attachment.contentType,
+      pageCount: attachment.pageCount,
+      pathname: attachment.pathname,
+      type: "file" as const,
+      url: attachment.modelUrl ?? attachment.url,
+    }));
+
     sendMessage({
       role: "user",
       parts: [
-        ...attachments.map((attachment) => ({
-          displayUrl: attachment.url,
-          pageCount: attachment.pageCount,
-          type: "file" as const,
-          url: attachment.modelUrl ?? attachment.url,
-          name: attachment.name,
-          mediaType: attachment.contentType,
-        })),
-        {
-          type: "text",
-          text: input,
-        },
+        ...fileParts,
+        ...(text ? [{ type: "text" as const, text: input }] : []),
       ],
     });
 
@@ -343,12 +364,14 @@ function PureMultimodalInput({
 
       if (response.ok) {
         const data = await response.json();
-        const { url, pathname, contentType, modelUrl, pageCount } = data;
+        const { url, filename, pathname, contentType, modelUrl, pageCount } =
+          data;
 
         return {
           url,
-          name: pathname,
+          name: filename || pathname,
           contentType,
+          pathname,
           modelUrl,
           pageCount,
         };
@@ -381,6 +404,7 @@ function PureMultimodalInput({
         toast.error("Failed to upload files");
       } finally {
         setUploadQueue([]);
+        event.target.value = "";
       }
     },
     [setAttachments, uploadFile]
@@ -444,7 +468,7 @@ function PureMultimodalInput({
 
   const handleDroppedFiles = useCallback(
     async (files: File[]) => {
-      const allowed = files.filter((f) => ALLOWED_MIME_TYPES.has(f.type));
+      const allowed = files.filter(isSupportedAttachment);
       const rejected = files.length - allowed.length;
       if (rejected > 0) {
         toast.error(
@@ -507,6 +531,8 @@ function PureMultimodalInput({
     },
     [handleDroppedFiles]
   );
+
+  const canSubmit = input.trim().length > 0 || attachments.length > 0;
 
   return (
     // biome-ignore lint/a11y/noNoninteractiveElementInteractions: drag-and-drop drop zone requires these handlers on the container
@@ -687,13 +713,13 @@ function PureMultimodalInput({
               <PromptInputSubmit
                 className={cn(
                   "h-7 w-7 rounded-xl transition-all duration-200",
-                  input.trim()
+                  canSubmit
                     ? "bg-foreground text-background hover:opacity-85 active:scale-95"
                     : "bg-muted text-muted-foreground/25 cursor-not-allowed"
                 )}
                 data-testid="send-button"
                 disabled={
-                  !input.trim() ||
+                  !canSubmit ||
                   uploadQueue.length > 0 ||
                   (status !== "ready" && status !== "error")
                 }
@@ -764,6 +790,9 @@ function PureAttachmentsButton({
           disabled={status !== "ready"}
           onClick={(event) => {
             event.preventDefault();
+            if (fileInputRef.current) {
+              fileInputRef.current.value = "";
+            }
             fileInputRef.current?.click();
           }}
           variant="ghost"
@@ -803,6 +832,14 @@ function PureModelSelectorCompact({
     activeModels[0];
   const [provider] = selectedModel.id.split("/");
 
+  useEffect(() => {
+    if (!(dynamicModels && selectedModel.id !== selectedModelId)) {
+      return;
+    }
+    onModelChange?.(selectedModel.id);
+    setCookie("chat-model", selectedModel.id);
+  }, [dynamicModels, onModelChange, selectedModel.id, selectedModelId]);
+
   return (
     <ModelSelector onOpenChange={setOpen} open={open}>
       <ModelSelectorTrigger asChild>
@@ -820,12 +857,7 @@ function PureModelSelectorCompact({
         <ModelSelectorList>
           {(() => {
             const curatedIds = new Set(chatModels.map((m) => m.id));
-            const allModels = dynamicModels
-              ? [
-                  ...chatModels,
-                  ...dynamicModels.filter((m) => !curatedIds.has(m.id)),
-                ]
-              : chatModels;
+            const allModels = activeModels;
 
             const grouped: Record<
               string,
@@ -919,8 +951,12 @@ function PureModelSelectorCompact({
                         {capabilities?.[model.id]?.tools && (
                           <WrenchIcon className="size-3.5" />
                         )}
-                        {capabilities?.[model.id]?.vision && (
+                        {(capabilities?.[model.id]?.image ||
+                          capabilities?.[model.id]?.vision) && (
                           <EyeIcon className="size-3.5" />
+                        )}
+                        {capabilities?.[model.id]?.file && (
+                          <PaperclipIcon size={14} style={{ height: 14, width: 14 }} />
                         )}
                         {capabilities?.[model.id]?.reasoning && (
                           <BrainIcon className="size-3.5" />

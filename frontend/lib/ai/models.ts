@@ -16,6 +16,9 @@ export const titleModel = {
 };
 
 export type ModelCapabilities = {
+  text: boolean;
+  image: boolean;
+  file: boolean;
   tools: boolean;
   vision: boolean;
   reasoning: boolean;
@@ -29,6 +32,32 @@ export type ChatModel = {
   gatewayOrder?: string[];
   reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high";
 };
+
+type OpenRouterArchitecture = {
+  input_modalities?: string[];
+  output_modalities?: string[];
+};
+
+type OpenRouterModel = {
+  id: string;
+  name: string;
+  description?: string;
+  architecture?: OpenRouterArchitecture;
+  supported_parameters?: string[];
+};
+
+type OpenRouterModelsResponse = {
+  data?: OpenRouterModel[];
+};
+
+export type ModelCatalogue = {
+  capabilities: Record<string, ModelCapabilities>;
+  models: ChatModel[];
+};
+
+const OPENROUTER_MODELS_URL =
+  "https://openrouter.ai/api/v1/models?output_modalities=all";
+const MODEL_CATALOGUE_REVALIDATE_SECONDS = 60 * 60 * 24;
 
 // Curated list of models, ordered roughly by capability tier. The agent
 // will accept any OpenRouter model id, but the dropdown shows these
@@ -90,22 +119,81 @@ export const chatModels: ChatModel[] = [
   },
 ];
 
-// The capability lookup in the chatbot template hit Vercel AI Gateway's
-// /v1/models endpoint to populate tool/vision/reasoning flags. We don't
-// route through that gateway, so we hand-mark capabilities for the
-// curated list. The agent calls the OpenRouter chat-completion API which
-// always supports tools; vision flags here are advisory for the UI's
-// attachment button.
+// Fallback only. The /api/models route uses OpenRouter's live metadata
+// whenever it is reachable.
 const CAPABILITIES: Record<string, ModelCapabilities> = {
-  "openai/gpt-5.5": { tools: true, vision: true, reasoning: false },
-  "openai/gpt-5.4-mini": { tools: true, vision: true, reasoning: false },
-  "google/gemini-3.1-pro": { tools: true, vision: true, reasoning: true },
-  "google/gemini-3.0-flash": { tools: true, vision: true, reasoning: false },
-  "anthropic/claude-opus-4.7": { tools: true, vision: true, reasoning: true },
-  "anthropic/claude-sonnet-4.6": { tools: true, vision: true, reasoning: true },
-  "moonshotai/kimi-k2.5": { tools: true, vision: false, reasoning: false },
-  "deepseek/deepseek-v3.2": { tools: true, vision: false, reasoning: false },
-  "xai/grok-4.1": { tools: true, vision: true, reasoning: false },
+  "openai/gpt-5.5": {
+    text: true,
+    image: true,
+    file: true,
+    tools: true,
+    vision: true,
+    reasoning: true,
+  },
+  "openai/gpt-5.4-mini": {
+    text: true,
+    image: true,
+    file: true,
+    tools: true,
+    vision: true,
+    reasoning: true,
+  },
+  "google/gemini-3.1-pro": {
+    text: true,
+    image: true,
+    file: false,
+    tools: true,
+    vision: true,
+    reasoning: true,
+  },
+  "google/gemini-3.0-flash": {
+    text: true,
+    image: true,
+    file: false,
+    tools: true,
+    vision: true,
+    reasoning: false,
+  },
+  "anthropic/claude-opus-4.7": {
+    text: true,
+    image: true,
+    file: false,
+    tools: true,
+    vision: true,
+    reasoning: true,
+  },
+  "anthropic/claude-sonnet-4.6": {
+    text: true,
+    image: true,
+    file: false,
+    tools: true,
+    vision: true,
+    reasoning: true,
+  },
+  "moonshotai/kimi-k2.5": {
+    text: true,
+    image: true,
+    file: false,
+    tools: true,
+    vision: true,
+    reasoning: true,
+  },
+  "deepseek/deepseek-v3.2": {
+    text: true,
+    image: false,
+    file: false,
+    tools: true,
+    vision: false,
+    reasoning: true,
+  },
+  "xai/grok-4.1": {
+    text: true,
+    image: true,
+    file: false,
+    tools: true,
+    vision: true,
+    reasoning: false,
+  },
 };
 
 export function getCapabilities(): Record<string, ModelCapabilities> {
@@ -118,13 +206,13 @@ export type GatewayModelWithCapabilities = ChatModel & {
   capabilities: ModelCapabilities;
 };
 
-// Dynamic model discovery is disabled — DeepSearch ships a curated list
-// of OpenRouter models. Returning the curated list keeps the model
-// dropdown working without round-tripping to Vercel AI Gateway.
 export function getAllGatewayModels(): GatewayModelWithCapabilities[] {
   return chatModels.map((model) => ({
     ...model,
     capabilities: CAPABILITIES[model.id] ?? {
+      text: false,
+      image: false,
+      file: false,
       tools: false,
       vision: false,
       reasoning: false,
@@ -134,6 +222,93 @@ export function getAllGatewayModels(): GatewayModelWithCapabilities[] {
 
 export function getActiveModels(): ChatModel[] {
   return chatModels;
+}
+
+function providerFromId(id: string): string {
+  return id.split("/").at(0) ?? "openrouter";
+}
+
+function supportsTextOutput(model: OpenRouterModel): boolean {
+  return model.architecture?.output_modalities?.includes("text") ?? false;
+}
+
+function capabilitiesFromOpenRouterModel(
+  model: OpenRouterModel
+): ModelCapabilities {
+  const inputModalities = new Set(model.architecture?.input_modalities ?? []);
+  const supportedParameters = new Set(model.supported_parameters ?? []);
+  const image = inputModalities.has("image");
+
+  return {
+    text: inputModalities.has("text"),
+    image,
+    file: inputModalities.has("file"),
+    tools: supportedParameters.has("tools"),
+    vision: image,
+    reasoning:
+      supportedParameters.has("reasoning") ||
+      supportedParameters.has("include_reasoning"),
+  };
+}
+
+function toChatModel(model: OpenRouterModel, fallback?: ChatModel): ChatModel {
+  return {
+    id: model.id,
+    name: model.name,
+    provider: providerFromId(model.id),
+    description:
+      model.description ?? fallback?.description ?? "OpenRouter model",
+    gatewayOrder: fallback?.gatewayOrder,
+    reasoningEffort: fallback?.reasoningEffort,
+  };
+}
+
+async function fetchOpenRouterModels(): Promise<OpenRouterModel[]> {
+  const response = await fetch(OPENROUTER_MODELS_URL, {
+    next: { revalidate: MODEL_CATALOGUE_REVALIDATE_SECONDS },
+  });
+
+  if (!response.ok) {
+    throw new Error(`OpenRouter models request failed: ${response.status}`);
+  }
+
+  const payload = (await response.json()) as OpenRouterModelsResponse;
+  return payload.data ?? [];
+}
+
+function buildCatalogue(remoteModels: OpenRouterModel[]): ModelCatalogue {
+  const remoteById = new Map(remoteModels.map((model) => [model.id, model]));
+  const curatedIds = new Set(chatModels.map((model) => model.id));
+  const capabilities: Record<string, ModelCapabilities> = {};
+
+  for (const model of remoteModels) {
+    capabilities[model.id] = capabilitiesFromOpenRouterModel(model);
+  }
+
+  const curatedModels = chatModels.flatMap((fallback) => {
+    const remoteModel = remoteById.get(fallback.id);
+    return remoteModel ? [toChatModel(remoteModel, fallback)] : [];
+  });
+  const discoveredModels = remoteModels
+    .filter(supportsTextOutput)
+    .filter((model) => !curatedIds.has(model.id))
+    .map((model) => toChatModel(model));
+
+  return {
+    capabilities,
+    models: [...curatedModels, ...discoveredModels],
+  };
+}
+
+export async function getOpenRouterModelCatalogue(): Promise<ModelCatalogue> {
+  try {
+    return buildCatalogue(await fetchOpenRouterModels());
+  } catch {
+    return {
+      capabilities: getCapabilities(),
+      models: chatModels,
+    };
+  }
 }
 
 export const allowedModelIds = new Set(chatModels.map((m) => m.id));

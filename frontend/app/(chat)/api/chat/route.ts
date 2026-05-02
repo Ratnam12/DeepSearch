@@ -1,7 +1,12 @@
 import { auth } from "@clerk/nextjs/server";
+import { get } from "@vercel/blob";
 import { ipAddress } from "@vercel/functions";
 import { convertToModelMessages } from "ai";
 import { after } from "next/server";
+import {
+  DEFAULT_CHAT_MODEL,
+  getOpenRouterModelCatalogue,
+} from "@/lib/ai/models";
 import {
   deleteChatById,
   getChatById,
@@ -34,6 +39,93 @@ const BACKEND_URL =
 // error to the client instead of letting Vercel kill the function with
 // no response.
 const BACKEND_TIMEOUT_MS = 290_000;
+
+type UserFilePart = {
+  type: "file";
+  mediaType: string;
+  url: string;
+  displayUrl?: string;
+  filename?: string;
+  name?: string;
+  pageCount?: number;
+  pathname?: string;
+};
+
+function getStringField(
+  value: Record<string, unknown>,
+  field: string
+): string | undefined {
+  const fieldValue = value[field];
+  return typeof fieldValue === "string" && fieldValue ? fieldValue : undefined;
+}
+
+async function readBlobPathname(pathname: string): Promise<ArrayBuffer | null> {
+  try {
+    const blob = await get(pathname, { access: "private" });
+    if (!blob) {
+      return null;
+    }
+    return await new Response(blob.stream).arrayBuffer();
+  } catch {
+    return null;
+  }
+}
+
+async function readAttachmentUrl(url: string): Promise<ArrayBuffer> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Attachment read failed: ${response.status}`);
+  }
+  return response.arrayBuffer();
+}
+
+async function attachmentToDataUrl(part: UserFilePart): Promise<string> {
+  if (part.url.startsWith("data:")) {
+    return part.url;
+  }
+
+  const partRecord = part as Record<string, unknown>;
+  const pathname =
+    getStringField(partRecord, "pathname") ?? getStringField(partRecord, "name");
+  const buffer =
+    (pathname ? await readBlobPathname(pathname) : null) ??
+    (await readAttachmentUrl(part.url));
+  const base64 = Buffer.from(buffer).toString("base64");
+  return `data:${part.mediaType};base64,${base64}`;
+}
+
+async function inlineFilePart(
+  part: ChatMessage["parts"][number]
+): Promise<ChatMessage["parts"][number]> {
+  if (part.type !== "file") {
+    return part;
+  }
+
+  return {
+    ...part,
+    url: await attachmentToDataUrl(part as UserFilePart),
+  } as ChatMessage["parts"][number];
+}
+
+async function inlineMessageAttachments(
+  messages: ChatMessage[]
+): Promise<ChatMessage[]> {
+  return Promise.all(
+    messages.map(async (message) => {
+      const parts = await Promise.all(message.parts.map(inlineFilePart));
+      return {
+        ...message,
+        parts: parts as ChatMessage["parts"],
+      };
+    })
+  );
+}
+
+async function resolveSelectedModel(modelId: string): Promise<string> {
+  const catalogue = await getOpenRouterModelCatalogue();
+  const isAvailable = catalogue.models.some((model) => model.id === modelId);
+  return isAvailable ? modelId : DEFAULT_CHAT_MODEL;
+}
 
 export async function POST(request: Request) {
   let requestBody: PostRequestBody;
@@ -110,16 +202,19 @@ export async function POST(request: Request) {
   // those pairs and the upstream rejects with
   // "Missing required parameter: input[N].call_id". Text-only history
   // round-trips cleanly across every provider.
-  const historyForModel = uiMessages.map((msg) => ({
-    ...msg,
-    parts: msg.parts.filter(
-      (part) =>
-        part.type === "text" ||
-        part.type === "reasoning" ||
-        part.type === "file"
-    ),
-  }));
+  const historyForModel = await inlineMessageAttachments(
+    uiMessages.map((msg) => ({
+      ...msg,
+      parts: msg.parts.filter(
+        (part) =>
+          part.type === "text" ||
+          part.type === "reasoning" ||
+          part.type === "file"
+      ),
+    }))
+  );
   const modelMessages = await convertToModelMessages(historyForModel);
+  const resolvedModel = await resolveSelectedModel(selectedChatModel);
 
   let backendResponse: Response;
   try {
@@ -130,9 +225,9 @@ export async function POST(request: Request) {
         id,
         messages: modelMessages,
         // Forward the user's model pick so the FastAPI agent can override
-        // its default complexity-based router. The backend treats this as
-        // an advisory hint — unknown model ids fall back to the default.
-        model: selectedChatModel,
+        // its default complexity-based router. Stale cookie values are
+        // resolved against OpenRouter's live model catalogue above.
+        model: resolvedModel,
         // Pass through to OpenRouter's session tracking so all generations
         // for this conversation are grouped under one session and one
         // user in the OpenRouter dashboard. Clerk's user id maps to

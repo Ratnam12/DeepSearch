@@ -190,6 +190,20 @@ def test_file_part_url_field_used_as_fallback() -> None:
     assert part["file"]["file_data"] == "https://blob.vercel.io/image.png"
 
 
+def test_image_file_part_converted_to_image_url() -> None:
+    """AI SDK file parts with image media types use OpenRouter image_url."""
+    messages = [_user([{
+        "type": "file",
+        "data": "data:image/png;base64,abc123",
+        "mediaType": "image/png",
+        "filename": "chart.png",
+    }])]
+    result = normalise_messages_for_openrouter(messages)
+    part = result[0]["content"][0]
+    assert part["type"] == "image_url"
+    assert part["image_url"]["url"] == "data:image/png;base64,abc123"
+
+
 # ---------------------------------------------------------------------------
 # Idempotency: already-OpenAI shapes pass through unchanged
 # ---------------------------------------------------------------------------
