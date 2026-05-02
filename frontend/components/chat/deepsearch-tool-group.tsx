@@ -1,7 +1,8 @@
 "use client";
 
+import { AnimatePresence, motion } from "framer-motion";
 import { ChevronDownIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { cn } from "@/lib/utils";
 import { DeepSearchMark } from "./deepsearch-mark";
 import {
@@ -61,11 +62,9 @@ export function DeepSearchToolGroup({
   tools: DeepSearchToolPart[];
   collapsed: boolean;
 }) {
-  // Track open-state in React so we can auto-close when `collapsed`
-  // transitions from false → true (i.e., the answer text just arrived).
-  // After that, the user has full control via clicks.
   const [open, setOpen] = useState(!collapsed);
   const [userTouched, setUserTouched] = useState(false);
+  const contentId = useId();
 
   useEffect(() => {
     if (collapsed && !userTouched) {
@@ -81,62 +80,73 @@ export function DeepSearchToolGroup({
   }
 
   return (
-    <details
-      className="group/tools my-1 max-w-[min(100%,640px)]"
-      onToggle={(event) => {
-        const next = event.currentTarget.open;
-        if (next !== open) {
-          setUserTouched(true);
-          setOpen(next);
-        }
-      }}
-      open={open}
-    >
-      <summary
+    <div className="my-1 max-w-[min(100%,640px)]">
+      <button
+        aria-controls={contentId}
+        aria-expanded={open}
         className={cn(
-          "flex items-center gap-2 py-1 text-[12.5px] leading-tight",
+          "flex w-full items-center gap-2 py-1 text-[12.5px] leading-tight",
           "text-muted-foreground/70 hover:text-muted-foreground",
           "cursor-pointer transition-colors duration-150",
-          "list-none [&::-webkit-details-marker]:hidden"
+          "active:scale-[0.98] transition-all"
         )}
+        onClick={() => {
+          setUserTouched(true);
+          setOpen((prev) => !prev);
+        }}
+        type="button"
       >
         <DeepSearchMark
           className={cn("shrink-0", !collapsed && "animate-pulse")}
           size={14}
         />
         <span className="truncate font-medium">{summaryLabel(tools)}</span>
-        <ChevronDownIcon
+        <motion.span
+          animate={{ rotate: open ? 180 : 0 }}
           aria-hidden
-          className={cn(
-            "ml-auto size-3 shrink-0 text-muted-foreground/40",
-            "transition-transform duration-150",
-            "group-open/tools:rotate-180"
-          )}
-        />
-      </summary>
-      <div className="mt-1 space-y-0.5 border-l border-border/40 pl-3">
-        {tools.map((tool, index) => (
-          <DeepSearchToolStep
-            input={(tool as { input?: unknown }).input}
-            key={
-              (tool as { toolCallId?: string }).toolCallId ??
-              `tool-step-${index}`
-            }
-            output={(tool as { output?: unknown }).output}
-            state={
-              ((tool as { state?: string }).state as
-                | "input-streaming"
-                | "input-available"
-                | "approval-requested"
-                | "approval-responded"
-                | "output-available"
-                | "output-error"
-                | "output-denied") ?? "input-available"
-            }
-            type={tool.type}
-          />
-        ))}
-      </div>
-    </details>
+          className="ml-auto shrink-0"
+          transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+        >
+          <ChevronDownIcon className="size-3 text-muted-foreground/40" />
+        </motion.span>
+      </button>
+
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            animate={{ height: "auto", opacity: 1, y: 0 }}
+            exit={{ height: 0, opacity: 0, y: -4 }}
+            id={contentId}
+            initial={{ height: 0, opacity: 0, y: -4 }}
+            style={{ overflow: "hidden" }}
+            transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+          >
+            <div className="mt-1 space-y-0.5 border-l border-border/40 pl-3">
+              {tools.map((tool, index) => (
+                <DeepSearchToolStep
+                  input={(tool as { input?: unknown }).input}
+                  key={
+                    (tool as { toolCallId?: string }).toolCallId ??
+                    `tool-step-${index}`
+                  }
+                  output={(tool as { output?: unknown }).output}
+                  state={
+                    ((tool as { state?: string }).state as
+                      | "input-streaming"
+                      | "input-available"
+                      | "approval-requested"
+                      | "approval-responded"
+                      | "output-available"
+                      | "output-error"
+                      | "output-denied") ?? "input-available"
+                  }
+                  type={tool.type}
+                />
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   );
 }
