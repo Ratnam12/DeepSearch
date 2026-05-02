@@ -494,6 +494,69 @@ def _latest_user_text(messages: list[dict[str, Any]]) -> str:
     return ""
 
 
+def normalise_messages_for_openrouter(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Translate AI SDK ModelMessage parts to OpenAI Chat Completions format.
+
+    The Next.js proxy calls ``convertToModelMessages`` before forwarding,
+    which produces provider-neutral parts:
+
+      - ``{"type": "text", "text": ...}``
+      - ``{"type": "image", "image": <url>, "mediaType"?: ...}``
+      - ``{"type": "file", "data": <url>, "mediaType": ..., "filename"?: ...}``
+
+    OpenRouter's chat-completions endpoint speaks OpenAI's wire format:
+
+      - ``{"type": "text", "text": ...}``
+      - ``{"type": "image_url", "image_url": {"url": ...}}``
+      - ``{"type": "file", "file": {"filename": ..., "file_data": ...}}``
+
+    This walks the messages array and rewrites parts to the OpenAI shape.
+    Anything already in OpenAI format (e.g. ``image_url``) passes through
+    unchanged so callers can normalise repeatedly without harm.
+    """
+    out: list[dict[str, Any]] = []
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            out.append(msg)
+            continue
+        new_content: list[Any] = []
+        for part in content:
+            if not isinstance(part, dict):
+                new_content.append(part)
+                continue
+            ptype = part.get("type")
+            if ptype == "image":
+                # AI SDK image part → OpenAI image_url
+                image = part.get("image")
+                url = str(image) if image is not None else ""
+                new_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": url},
+                })
+            elif ptype == "file":
+                # Already-OpenAI shape: pass through.
+                if isinstance(part.get("file"), dict):
+                    new_content.append(part)
+                    continue
+                data = part.get("data") or part.get("url") or ""
+                filename = part.get("filename") or part.get("name") or "file"
+                new_content.append({
+                    "type": "file",
+                    "file": {
+                        "filename": filename,
+                        "file_data": str(data),
+                    },
+                })
+            else:
+                new_content.append(part)
+        out.append({**msg, "content": new_content})
+    return out
+
+
+
 async def run_chat(
     messages: list[dict[str, Any]],
     model: str | None = None,
@@ -502,9 +565,9 @@ async def run_chat(
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Multi-turn entry point: run the agent loop over a full messages array.
 
-    Messages must already be in OpenAI chat-completion format. The Next.js
-    proxy is responsible for translating AI SDK UIMessages into this format
-    via ``convertToModelMessages`` before forwarding.
+    Messages must already be in OpenAI chat-completion format (call
+    :func:`normalise_messages_for_openrouter` first if they came from the
+    AI SDK proxy in provider-neutral shape).
 
     ``model`` overrides the complexity-based router with a specific
     OpenRouter model id (e.g. ``openai/gpt-5.5``,

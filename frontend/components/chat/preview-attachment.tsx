@@ -1,3 +1,4 @@
+import { FileTextIcon } from "lucide-react";
 import Image from "next/image";
 import type { Attachment } from "@/lib/types";
 import { Spinner } from "../ui/spinner";
@@ -13,13 +14,15 @@ export const PreviewAttachment = ({
   onRemove?: () => void;
 }) => {
   const { name, url, contentType } = attachment;
+  const isImage = contentType?.startsWith("image");
+  const isPdf = contentType === "application/pdf";
 
   return (
     <div
       className="group relative h-24 w-24 shrink-0 overflow-hidden rounded-xl border border-border/40 bg-muted"
       data-testid="input-attachment-preview"
     >
-      {contentType?.startsWith("image") ? (
+      {isImage ? (
         <Image
           alt={name ?? "attachment"}
           className="size-full object-cover"
@@ -27,6 +30,19 @@ export const PreviewAttachment = ({
           src={url}
           width={96}
         />
+      ) : isPdf ? (
+        <a
+          className="flex size-full flex-col items-center justify-center gap-1.5 px-2 text-center text-muted-foreground transition-colors hover:text-foreground"
+          href={url}
+          rel="noreferrer"
+          target="_blank"
+          title={name}
+        >
+          <FileTextIcon className="size-6" />
+          <span className="line-clamp-2 break-all text-[10px] leading-tight">
+            {name}
+          </span>
+        </a>
       ) : (
         <div className="flex size-full items-center justify-center text-muted-foreground text-xs">
           File

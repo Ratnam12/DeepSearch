@@ -1,7 +1,7 @@
 "use client";
 
-import { useClerk, useUser } from "@clerk/nextjs";
 import type { UseChatHelpers } from "@ai-sdk/react";
+import { useClerk, useUser } from "@clerk/nextjs";
 import type { UIMessage } from "ai";
 import equal from "fast-deep-equal";
 import {
@@ -212,6 +212,16 @@ function PureMultimodalInput({
     }
   };
 
+  const { data: modelsDataForVision } = useSWR(
+    `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/models`,
+    (url: string) => fetch(url).then((r) => r.json()),
+    { revalidateOnFocus: false, dedupingInterval: 3_600_000 }
+  );
+  const capsForVision: Record<string, ModelCapabilities> | undefined =
+    modelsDataForVision?.capabilities ?? modelsDataForVision;
+  const selectedModelHasVision =
+    capsForVision?.[selectedModelId]?.vision ?? false;
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadQueue, setUploadQueue] = useState<string[]>([]);
   const [slashOpen, setSlashOpen] = useState(false);
@@ -221,16 +231,32 @@ function PureMultimodalInput({
   const submitForm = useCallback(() => {
     if (isLoaded && !isSignedIn) {
       const pending = input.trim();
-      const sourcePath = typeof window !== "undefined" ? window.location.pathname : "";
+      const sourcePath =
+        typeof window !== "undefined" ? window.location.pathname : "";
       const sourceMatch = sourcePath.match(/\/chat\/([^/?#]+)/);
       const fromChat = sourceMatch?.[1];
       const base = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
       const qs = [
         pending ? `query=${encodeURIComponent(pending)}` : "",
         fromChat ? `fromChat=${fromChat}` : "",
-      ].filter(Boolean).join("&");
+      ]
+        .filter(Boolean)
+        .join("&");
       const target = qs ? `${base}/?${qs}` : `${base}/`;
       openSignIn({ forceRedirectUrl: target, signUpForceRedirectUrl: target });
+      return;
+    }
+
+    const hasImageAttachment = attachments.some((a) =>
+      a.contentType?.startsWith("image/")
+    );
+    if (hasImageAttachment && !selectedModelHasVision) {
+      const modelName =
+        chatModels.find((m) => m.id === selectedModelId)?.name ??
+        selectedModelId;
+      toast.error(
+        `${modelName} doesn't support images. Switch to a vision-capable model or remove the image.`
+      );
       return;
     }
 
@@ -275,6 +301,8 @@ function PureMultimodalInput({
     isSignedIn,
     isLoaded,
     openSignIn,
+    selectedModelId,
+    selectedModelHasVision,
   ]);
 
   const uploadFile = useCallback(async (file: File) => {
@@ -420,6 +448,7 @@ function PureMultimodalInput({
         )}
 
       <input
+        accept="image/*,application/pdf"
         className="pointer-events-none fixed -top-4 -left-4 size-0.5 opacity-0"
         multiple
         onChange={handleFileChange}
@@ -538,11 +567,7 @@ function PureMultimodalInput({
         />
         <PromptInputFooter className="px-3 pb-3">
           <PromptInputTools>
-            <AttachmentsButton
-              fileInputRef={fileInputRef}
-              selectedModelId={selectedModelId}
-              status={status}
-            />
+            <AttachmentsButton fileInputRef={fileInputRef} status={status} />
             <ModelSelectorCompact
               onModelChange={onModelChange}
               selectedModelId={selectedModelId}
@@ -612,32 +637,15 @@ export const MultimodalInput = memo(
 function PureAttachmentsButton({
   fileInputRef,
   status,
-  selectedModelId,
 }: {
   fileInputRef: React.MutableRefObject<HTMLInputElement | null>;
   status: UseChatHelpers<ChatMessage>["status"];
-  selectedModelId: string;
 }) {
-  const { data: modelsResponse } = useSWR(
-    `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/models`,
-    (url: string) => fetch(url).then((r) => r.json()),
-    { revalidateOnFocus: false, dedupingInterval: 3_600_000 }
-  );
-
-  const caps: Record<string, ModelCapabilities> | undefined =
-    modelsResponse?.capabilities ?? modelsResponse;
-  const hasVision = caps?.[selectedModelId]?.vision ?? false;
-
   return (
     <Button
-      className={cn(
-        "h-7 w-7 rounded-lg border border-border/40 p-1 transition-colors",
-        hasVision
-          ? "text-foreground hover:border-border hover:text-foreground"
-          : "text-muted-foreground/30 cursor-not-allowed"
-      )}
+      className="h-7 w-7 rounded-lg border border-border/40 p-1 transition-colors text-foreground hover:border-border hover:text-foreground"
       data-testid="attachments-button"
-      disabled={status !== "ready" || !hasVision}
+      disabled={status !== "ready"}
       onClick={(event) => {
         event.preventDefault();
         fileInputRef.current?.click();

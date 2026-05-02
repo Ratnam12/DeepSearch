@@ -38,10 +38,15 @@ class _FakeDeepSearchAgent:
         return {"answer": "hello", "sources": [], "cached": False, "confidence": 1.0}
 
 
+def _identity_normalise(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return messages
+
+
 _agent_stub = types.ModuleType("backend.agent")
 _agent_stub.run_agent = _fake_run_agent  # type: ignore[attr-defined]
 _agent_stub.run_chat = _fake_run_chat  # type: ignore[attr-defined]
 _agent_stub.DeepSearchAgent = _FakeDeepSearchAgent  # type: ignore[attr-defined]
+_agent_stub.normalise_messages_for_openrouter = _identity_normalise  # type: ignore[attr-defined]
 sys.modules.setdefault("backend.agent", _agent_stub)
 
 from backend import main  # noqa: E402

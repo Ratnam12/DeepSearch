@@ -22,7 +22,7 @@ from openai import OpenAIError
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from backend.agent import run_agent, run_chat
+from backend.agent import normalise_messages_for_openrouter, run_agent, run_chat
 from backend.cache import cache_lookup, cache_store
 from backend.config import get_settings
 from backend.router import api_router
@@ -259,11 +259,11 @@ def _is_cache_eligible(messages: list[dict[str, Any]]) -> bool:
     if isinstance(content, str):
         return bool(content.strip())
     if isinstance(content, list):
-        has_images = any(
-            isinstance(p, dict) and p.get("type") == "image_url"
+        has_attachment = any(
+            isinstance(p, dict) and p.get("type") in ("image_url", "file")
             for p in content
         )
-        return not has_images
+        return not has_attachment
     return False
 
 
@@ -338,6 +338,12 @@ async def _ui_message_stream(
 
     Stream is terminated with ``data: [DONE]``.
     """
+    # The Next.js proxy ships AI SDK ModelMessage parts (provider-neutral
+    # ``image``/``file`` shapes). Translate to OpenAI Chat Completions
+    # format up-front so cache eligibility, text extraction, and the
+    # downstream agent loop all see one consistent wire format.
+    messages = normalise_messages_for_openrouter(messages)
+
     msg_id = f"msg_{uuid.uuid4().hex}"
     text_id = f"text_{uuid.uuid4().hex}"
     text_started = False

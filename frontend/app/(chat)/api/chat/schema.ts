@@ -17,6 +17,7 @@ const filePartSchema = z.object({
     "image/gif",
     "image/heic",
     "image/heif",
+    "application/pdf",
   ]),
   name: z.string().min(1).max(100),
   url: z.string().url(),

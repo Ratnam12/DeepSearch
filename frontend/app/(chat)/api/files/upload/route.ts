@@ -1,8 +1,7 @@
+import { auth } from "@clerk/nextjs/server";
 import { put } from "@vercel/blob";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-
-import { auth } from "@clerk/nextjs/server";
 
 // 25 MB covers iPhone HEICs and most research-paper PDFs without
 // pushing past Vercel Blob's per-request body limit on Hobby (≈ 50 MB).
@@ -15,6 +14,7 @@ const ALLOWED_TYPES = [
   "image/gif",
   "image/heic",
   "image/heif",
+  "application/pdf",
 ];
 
 const FileSchema = z.object({
