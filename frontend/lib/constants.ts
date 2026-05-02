@@ -6,9 +6,13 @@ export const isTestEnvironment = Boolean(
     process.env.CI_PLAYWRIGHT
 );
 
+// Empty-state suggestion chips. Each one should land on a substantive
+// research task that exercises the agent's tool loop (web search →
+// scrape → retrieve → synthesise into an artifact). Keep them concrete
+// and current — vague prompts produce vague artifacts.
 export const suggestions = [
-  "What are the latest developments in agentic AI research?",
   "Compare Vercel AI SDK and LangChain for production chatbots",
+  "Latest advances in agentic AI research, with citations",
+  "How does Cache Components work in Next.js 16?",
   "Summarise the case against speculative decoding",
-  "Recent benchmarks for retrieval-augmented generation",
 ];
