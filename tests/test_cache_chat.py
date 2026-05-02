@@ -69,7 +69,13 @@ _MULTI_TURN_BODY: dict[str, Any] = {
 
 
 async def _hit_lookup(query: str) -> str | None:
-    return "cached answer from upstash"
+    import json as _json
+
+    return _json.dumps({
+        "text": "cached answer from upstash",
+        "artifacts": [],
+        "citations": [],
+    })
 
 
 async def _noop_store(query: str, answer: str) -> None:

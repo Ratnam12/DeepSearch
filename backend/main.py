@@ -281,29 +281,10 @@ async def _replay_cached_payload(
     frontend has the [N] → URL mapping before artifacts render), each
     artifact (with a fresh id so each chat persists its own Document row
     instead of versioning the original), then ``finish`` + ``[DONE]``.
-
-    Falls back to treating the cached string as plain text for any
-    payload that doesn't parse as the structured shape. No legacy
-    plain-text entries exist today, but the fallback keeps a stale
-    payload from breaking the stream.
     """
     yield _ui_part({"type": "start", "messageId": msg_id})
 
-    payload: dict[str, Any] | None = None
-    try:
-        parsed = json.loads(cached)
-        if isinstance(parsed, dict) and ("text" in parsed or "artifacts" in parsed):
-            payload = parsed
-    except (json.JSONDecodeError, TypeError):
-        payload = None
-
-    if payload is None:
-        yield _ui_part({"type": "text-start", "id": text_id})
-        yield _ui_part({"type": "text-delta", "id": text_id, "delta": cached})
-        yield _ui_part({"type": "text-end", "id": text_id})
-        yield _ui_part({"type": "finish"})
-        yield b"data: [DONE]\n\n"
-        return
+    payload = json.loads(cached)
 
     cached_text = (payload.get("text") or "").strip()
     if cached_text:
@@ -632,20 +613,6 @@ def build_app() -> FastAPI:
     )
 
     app.include_router(api_router, prefix="/api/v1")
-
-    @app.get("/__version")
-    async def version() -> dict[str, str]:
-        """Return the git commit SHA of the running build.
-
-        Used to confirm which revision is live in a given environment
-        (Railway sets ``RAILWAY_GIT_COMMIT_SHA`` automatically).
-        """
-        import os as _os
-
-        return {
-            "sha": _os.environ.get("RAILWAY_GIT_COMMIT_SHA", "unknown"),
-            "short": _os.environ.get("RAILWAY_GIT_COMMIT_SHA", "unknown")[:7],
-        }
 
     @app.post("/search")
     async def search(request: SearchRequest) -> EventSourceResponse:
