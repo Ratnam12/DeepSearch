@@ -6,17 +6,18 @@ similarity so identical (or near-identical) queries skip the full pipeline.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from typing import Any
 
-import numpy as np
 from upstash_redis.asyncio import Redis
 
 from backend.config import get_settings
 from backend.embedder import cosine_similarity, embed
 
 _KEY_PREFIX = "ds:cache:"
+_LEGACY_KEY_PREFIX = "deepsearch:cache:"
 _redis: Redis | None = None
 
 
@@ -32,17 +33,27 @@ def _get_redis() -> Redis:
     return _redis
 
 
+def _stable_key(query: str, prefix: str = _KEY_PREFIX) -> str:
+    """Return a deterministic, collision-resistant Redis key for a query string."""
+    digest = hashlib.sha256(query.encode()).hexdigest()[:24]
+    return f"{prefix}{digest}"
+
+
 async def cache_lookup(query: str) -> str | None:
     """Return the cached answer whose stored embedding is closest to *query*.
 
-    Scans all ``ds:cache:*`` keys, computes cosine similarity against each
-    stored embedding, and returns the answer when the best score meets or
-    exceeds ``cache_similarity_threshold``.  Returns ``None`` on a miss.
+    Scans ``ds:cache:*`` and ``deepsearch:cache:*`` keys, computes cosine
+    similarity against each stored embedding, and returns the answer when the
+    best score meets or exceeds ``cache_similarity_threshold``.
+    Returns ``None`` on a miss.
     """
     settings = get_settings()
     redis = _get_redis()
     query_embedding = await embed(query)
-    keys: list[str] = await redis.keys(f"{_KEY_PREFIX}*")
+
+    keys: list[str] = []
+    for prefix in (_KEY_PREFIX, _LEGACY_KEY_PREFIX):
+        keys.extend(await redis.keys(f"{prefix}*"))
 
     best_score = 0.0
     best_answer: str | None = None
@@ -52,10 +63,18 @@ async def cache_lookup(query: str) -> str | None:
         if not raw:
             continue
         entry: dict[str, Any] = json.loads(raw)
-        score = cosine_similarity(query_embedding, entry["embedding"])
+        embedding = entry.get("embedding")
+        if not embedding:
+            continue
+        score = cosine_similarity(query_embedding, embedding)
         if score > best_score:
             best_score = score
-            best_answer = entry["answer"]
+            # Simple payload stores "answer" directly; legacy SemanticCache
+            # path nests the answer inside a "result" dict.
+            if "answer" in entry:
+                best_answer = entry["answer"]
+            elif isinstance(entry.get("result"), dict):
+                best_answer = entry["result"].get("answer")
 
     if best_score >= settings.cache_similarity_threshold:
         return best_answer
@@ -65,13 +84,13 @@ async def cache_lookup(query: str) -> str | None:
 async def cache_store(query: str, answer: str) -> None:
     """Embed *query* and persist a JSON payload in Redis with a TTL.
 
-    Key format: ``ds:cache:{hash(query) % 10**10}``
+    Key format: ``ds:cache:{sha256(query)[:24]}``
     Payload fields: query, answer, embedding (list[float]), stored_at (ISO-8601).
     """
     settings = get_settings()
     redis = _get_redis()
     embedding = await embed(query)
-    key = f"{_KEY_PREFIX}{hash(query) % 10 ** 10}"
+    key = _stable_key(query)
     payload = json.dumps({
         "query": query,
         "answer": answer,
@@ -82,7 +101,7 @@ async def cache_store(query: str, answer: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Legacy class — kept for backwards-compatibility with agent.py / tests.
+# Legacy class — kept for backwards-compatibility with agent.py / router.py.
 # ---------------------------------------------------------------------------
 
 
@@ -90,42 +109,37 @@ class SemanticCache:
     """
     Stores (embedding, result) pairs in Redis with a TTL.
     On lookup, computes cosine similarity against all cached embeddings
-    and returns the result if the best match exceeds the threshold.
+    and returns the result dict if the best match exceeds the threshold.
     """
 
     def __init__(self) -> None:
-        self._settings = get_settings()
-        self._redis = Redis(
-            url=self._settings.upstash_redis_rest_url,
-            token=self._settings.upstash_redis_rest_token,
-        )
-        self._key_prefix = "deepsearch:cache:"
+        self._key_prefix = _LEGACY_KEY_PREFIX
 
     async def lookup(self, query: str) -> dict[str, Any] | None:
-        """Return a cached result if a sufficiently similar query exists."""
-        from backend.embedder import embed_query
-
-        query_vec = np.array(await embed_query(query), dtype=np.float32)
-        keys = await self._redis.keys(f"{self._key_prefix}*")
+        """Return a cached result dict if a sufficiently similar query exists."""
+        redis = _get_redis()
+        settings = get_settings()
+        query_vec = await embed(query)
+        keys = await redis.keys(f"{self._key_prefix}*")
 
         best_score = 0.0
         best_result: dict[str, Any] | None = None
 
         for key in keys:
-            raw = await self._redis.get(key)
+            raw = await redis.get(key)
             if not raw:
                 continue
             entry = json.loads(raw)
-            cached_vec = np.array(entry["embedding"], dtype=np.float32)
-            score = float(_cosine_similarity(query_vec, cached_vec))
-
+            embedding = entry.get("embedding")
+            if not embedding:
+                continue
+            score = cosine_similarity(query_vec, embedding)
             if score > best_score:
                 best_score = score
-                best_result = entry["result"]
+                best_result = entry.get("result")
 
-        if best_score >= self._settings.cache_similarity_threshold:
+        if best_score >= settings.cache_similarity_threshold:
             return best_result
-
         return None
 
     async def store(
@@ -134,17 +148,9 @@ class SemanticCache:
         embedding: list[float],
         result: dict[str, Any],
     ) -> None:
-        """Persist a query embedding + result with a TTL."""
-        key = f"{self._key_prefix}{hash(query)}"
+        """Persist a query embedding + result dict with a TTL."""
+        redis = _get_redis()
+        settings = get_settings()
+        key = _stable_key(query, self._key_prefix)
         payload = json.dumps({"embedding": embedding, "result": result})
-        await self._redis.setex(
-            key, self._settings.cache_ttl_seconds, payload
-        )
-
-
-def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    """Compute cosine similarity between two 1-D vectors."""
-    denom = np.linalg.norm(a) * np.linalg.norm(b)
-    if denom == 0:
-        return 0.0
-    return float(np.dot(a, b) / denom)
+        await redis.setex(key, settings.cache_ttl_seconds, payload)

@@ -37,7 +37,7 @@ The LLM is only allowed to state things that are present in the retrieved chunks
 - **Hybrid search**: dense vectors from `text-embedding-3-small` (1536 dimensions) combined with sparse word-frequency vectors, merged inside Qdrant with Reciprocal Rank Fusion (RRF), then re-ranked with `cross-encoder/ms-marco-MiniLM-L-6-v2`.
 - **Confidence gating**: if the highest rerank score after retrieval is below 0.65, the agent returns a refusal message and tries to search and scrape fresh sources before answering.
 - **Prompt-injection defence**: all scraped web content is wrapped in `<untrusted_web_content source="...">` XML tags and scanned for 10 known injection patterns before it reaches the LLM context window.
-- **Semantic cache**: previous answers are stored in Upstash Redis keyed by query embedding. A new query with cosine similarity >= 0.70 against a cached query gets the cached answer instantly, skipping the full pipeline.
+- **Semantic cache**: previous answers are stored in Upstash Redis keyed by query embedding. A new standalone first-turn query with cosine similarity >= 0.70 against a cached query gets the cached answer instantly on the `/chat` endpoint, skipping the full research pipeline. Multi-turn follow-up messages are intentionally excluded from caching to prevent context-mismatched answers.
 
 ### Models and routing
 
@@ -380,7 +380,7 @@ The key idea is that MIPROv2 searches the space of prompt instructions using the
 
 ### Infrastructure
 
-- **Local**: Docker Compose runs Qdrant, Redis, and the FastAPI backend together.
+- **Local**: Docker Compose runs Qdrant, a local Redis container (for optional use), and the FastAPI backend. Note: the semantic cache always uses the Upstash REST client (`UPSTASH_REDIS_REST_*`), not the local `redis://` container — point those variables at Upstash even for local development to enable caching.
 - **Production**: Next.js frontend on Vercel, FastAPI backend deployable anywhere (Docker), Qdrant Cloud for the vector store, Upstash for Redis.
 
 ---
@@ -416,7 +416,7 @@ Then open http://localhost:3000.
 | `OPENAI_API_KEY` | OpenAI key (embeddings only, not on OpenRouter) |
 | `SERPER_API_KEY` | Serper Google Search API key |
 | `QDRANT_URL` | Qdrant instance URL (local: `http://localhost:6333`) |
-| `UPSTASH_REDIS_REST_URL` | Upstash Redis REST URL |
+| `UPSTASH_REDIS_REST_URL` | Upstash Redis REST URL (used by the Python semantic cache — not the local Docker Redis) |
 | `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis REST token |
 
 ---

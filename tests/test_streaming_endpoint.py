@@ -6,6 +6,7 @@ import os
 import sys
 import types
 from collections.abc import AsyncGenerator
+from typing import Any
 
 import httpx
 import pytest
@@ -23,14 +24,24 @@ async def _fake_agent(question: str) -> AsyncGenerator[dict[str, str], None]:
     yield {"type": "text", "content": "hello"}
 
 
+async def _fake_run_chat(
+    messages: list[dict[str, Any]],
+    model: str | None = None,
+    session_id: str | None = None,
+    user_id: str | None = None,
+) -> AsyncGenerator[dict[str, Any], None]:
+    yield {"type": "text", "content": "hello from chat"}
+
+
 class _FakeDeepSearchAgent:
     async def run(self, query: str, use_cache: bool = True) -> dict[str, object]:
         return {"answer": "hello", "sources": [], "cached": False, "confidence": 1.0}
 
 
 agent_stub = types.ModuleType("backend.agent")
-agent_stub.run_agent = _fake_agent
-agent_stub.DeepSearchAgent = _FakeDeepSearchAgent
+agent_stub.run_agent = _fake_agent  # type: ignore[attr-defined]
+agent_stub.run_chat = _fake_run_chat  # type: ignore[attr-defined]
+agent_stub.DeepSearchAgent = _FakeDeepSearchAgent  # type: ignore[attr-defined]
 sys.modules.setdefault("backend.agent", agent_stub)
 
 from backend import main

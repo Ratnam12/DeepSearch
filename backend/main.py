@@ -213,6 +213,44 @@ def _inject_citations(content: str, citations: list[dict[str, Any]]) -> str:
     return processed + "\n".join(sources_lines)
 
 
+def _extract_latest_user_text(messages: list[dict[str, Any]]) -> str:
+    """Extract plain text from the most recent user message for cache keying."""
+    for msg in reversed(messages):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            return " ".join(
+                str(part.get("text", ""))
+                for part in content
+                if isinstance(part, dict) and part.get("type") == "text"
+            ).strip()
+    return ""
+
+
+def _is_cache_eligible(messages: list[dict[str, Any]]) -> bool:
+    """Return True when this is a standalone first-turn text-only query.
+
+    Multi-turn follow-ups are skipped because the cached answer for the same
+    text might be wrong in a different conversation context.
+    """
+    user_turns = [m for m in messages if m.get("role") == "user"]
+    if len(user_turns) != 1:
+        return False
+    content = user_turns[0].get("content")
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        has_images = any(
+            isinstance(p, dict) and p.get("type") == "image_url"
+            for p in content
+        )
+        return not has_images
+    return False
+
+
 async def _ui_message_stream(
     messages: list[dict[str, Any]],
     model: str | None = None,
@@ -248,6 +286,20 @@ async def _ui_message_stream(
     # title to reflect what the user actually asked rather than a generic
     # "Research notes". Pull a summary of the last user message up front.
     fallback_title = _derive_artifact_title(messages)
+    # Determine once whether this request is eligible for semantic caching.
+    # Used for both the early-return hit path and the post-stream store path.
+    query_text = _extract_latest_user_text(messages) if _is_cache_eligible(messages) else ""
+
+    if query_text:
+        cached_answer = await _safe_cache_lookup(query_text)
+        if cached_answer is not None:
+            yield _ui_part({"type": "start", "messageId": msg_id})
+            yield _ui_part({"type": "text-start", "id": text_id})
+            yield _ui_part({"type": "text-delta", "id": text_id, "delta": cached_answer})
+            yield _ui_part({"type": "text-end", "id": text_id})
+            yield _ui_part({"type": "finish"})
+            yield b"data: [DONE]\n\n"
+            return
 
     yield _ui_part({"type": "start", "messageId": msg_id})
 
@@ -333,26 +385,28 @@ async def _ui_message_stream(
     if text_started:
         yield _ui_part({"type": "text-end", "id": text_id})
 
+    full_text = "".join(text_buffer).strip()
+    if query_text and full_text:
+        await _safe_cache_store(query_text, full_text)
+
     # Safety net: if the agent answered substantively but didn't call
     # create_artifact (sometimes the model just forgets despite the
     # prompt), promote the streamed answer into a text artifact so the
     # user always gets the polished side-panel view they expect from
     # DeepSearch. The threshold is conservative — short factual lookups
     # ("capital of France?") stay inline-only.
-    if not artifact_emitted:
-        full_text = "".join(text_buffer).strip()
-        if len(full_text.split()) >= 120:
-            artifact_id = str(uuid.uuid4())
-            yield _ui_part({
-                "type": "data-artifact",
+    if not artifact_emitted and len(full_text.split()) >= 120:
+        artifact_id = str(uuid.uuid4())
+        yield _ui_part({
+            "type": "data-artifact",
+            "id": artifact_id,
+            "data": {
                 "id": artifact_id,
-                "data": {
-                    "id": artifact_id,
-                    "kind": "text",
-                    "title": fallback_title,
-                    "content": full_text,
-                },
-            })
+                "kind": "text",
+                "title": fallback_title,
+                "content": full_text,
+            },
+        })
 
     yield _ui_part({"type": "finish"})
     yield b"data: [DONE]\n\n"
