@@ -1,11 +1,12 @@
 "use client";
 
-import { ChevronDownIcon, SparklesIcon } from "lucide-react";
+import { ChevronDownIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
+import { DeepSearchMark } from "./deepsearch-mark";
 import {
-  DeepSearchToolStep,
   type DeepSearchToolPart,
+  DeepSearchToolStep,
 } from "./deepsearch-tool-step";
 
 // Wraps a run of consecutive agent tool calls in a single header that
@@ -99,12 +100,9 @@ export function DeepSearchToolGroup({
           "list-none [&::-webkit-details-marker]:hidden"
         )}
       >
-        <SparklesIcon
-          aria-hidden
-          className={cn(
-            "size-3.5 shrink-0 text-muted-foreground/50",
-            !collapsed && "animate-pulse"
-          )}
+        <DeepSearchMark
+          className={cn("shrink-0", !collapsed && "animate-pulse")}
+          size={14}
         />
         <span className="truncate font-medium">{summaryLabel(tools)}</span>
         <ChevronDownIcon

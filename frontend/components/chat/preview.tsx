@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { suggestions } from "@/lib/constants";
-import { SparklesIcon } from "./icons";
+import { DeepSearchMark } from "./deepsearch-mark";
 
 export function Preview() {
   const router = useRouter();
@@ -16,7 +16,7 @@ export function Preview() {
     <div className="flex h-full flex-col overflow-hidden rounded-tl-2xl bg-background">
       <div className="flex h-14 shrink-0 items-center gap-3 border-b border-border/20 px-5">
         <div className="flex size-5 items-center justify-center rounded bg-muted/60 ring-1 ring-border/50">
-          <SparklesIcon size={10} />
+          <DeepSearchMark size={12} />
         </div>
         <span className="text-[13px] text-muted-foreground">Chatbot</span>
       </div>

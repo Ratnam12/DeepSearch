@@ -7,10 +7,10 @@ import { MessageContent, MessageResponse } from "../ai-elements/message";
 import { Shimmer } from "../ai-elements/shimmer";
 import { useDataStream } from "./data-stream-provider";
 import { DeepSearchArtifactCard } from "./deepsearch-artifact-card";
+import { DeepSearchMark } from "./deepsearch-mark";
 import { DeepSearchToolGroup } from "./deepsearch-tool-group";
 import type { DeepSearchToolPart } from "./deepsearch-tool-step";
 import { DocumentPreview } from "./document-preview";
-import { SparklesIcon } from "./icons";
 import { MessageActions } from "./message-actions";
 import { MessageReasoning } from "./message-reasoning";
 import { PreviewAttachment } from "./preview-attachment";
@@ -78,7 +78,11 @@ function collectCitations(
       index?: number;
       url?: string;
     }>) {
-      if (typeof item.index === "number" && typeof item.url === "string" && item.url) {
+      if (
+        typeof item.index === "number" &&
+        typeof item.url === "string" &&
+        item.url
+      ) {
         map.set(item.index, item.url);
       }
     }
@@ -198,13 +202,15 @@ const PurePreviewMessage = ({
       // Look ahead to see if there's substantive text content following
       // this group anywhere in the message — that triggers the auto-
       // collapse so the answer takes focus.
-      const collapsed = rawParts.slice(i).some(
-        (p) =>
-          (p.type === "text" && p.text?.trim().length > 0) ||
-          (p.type === "reasoning" &&
-            "text" in p &&
-            (p as { text?: string }).text?.trim().length)
-      );
+      const collapsed = rawParts
+        .slice(i)
+        .some(
+          (p) =>
+            (p.type === "text" && p.text?.trim().length > 0) ||
+            (p.type === "reasoning" &&
+              "text" in p &&
+              (p as { text?: string }).text?.trim().length)
+        );
       renderItems.push({
         kind: "tool-group",
         tools: groupTools,
@@ -400,8 +406,8 @@ const PurePreviewMessage = ({
       >
         {isAssistant && (
           <div className="flex h-[calc(13px*1.65)] shrink-0 items-center">
-            <div className="flex size-7 items-center justify-center rounded-lg bg-muted/60 text-muted-foreground ring-1 ring-border/50">
-              <SparklesIcon size={13} />
+            <div className="flex size-7 items-center justify-center rounded-lg bg-muted/60 ring-1 ring-border/50">
+              <DeepSearchMark size={16} />
             </div>
           </div>
         )}
@@ -426,8 +432,8 @@ export const ThinkingMessage = () => {
     >
       <div className="flex items-start gap-3">
         <div className="flex h-[calc(13px*1.65)] shrink-0 items-center">
-          <div className="flex size-7 items-center justify-center rounded-lg bg-muted/60 text-muted-foreground ring-1 ring-border/50">
-            <SparklesIcon size={13} />
+          <div className="flex size-7 items-center justify-center rounded-lg bg-muted/60 ring-1 ring-border/50">
+            <DeepSearchMark size={16} />
           </div>
         </div>
 

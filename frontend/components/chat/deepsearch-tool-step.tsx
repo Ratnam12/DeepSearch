@@ -6,10 +6,11 @@ import {
   GlobeIcon,
   type LucideIcon,
   SearchIcon,
-  SparklesIcon,
   WrenchIcon,
 } from "lucide-react";
+import type { JSX } from "react";
 import { cn } from "@/lib/utils";
+import { DeepSearchMark } from "./deepsearch-mark";
 
 // A deliberately understated render of a single agent tool call. Replaces
 // the ai-elements <Tool> card (with its border, badge, and wrench icon)
@@ -50,7 +51,7 @@ const isFailure = (state: ToolStepState) =>
 
 type Description = {
   label: string;
-  Icon: LucideIcon;
+  Icon: LucideIcon | (({ className }: { className?: string }) => JSX.Element);
 };
 
 function describe(type: string, input: unknown): Description {
@@ -67,9 +68,7 @@ function describe(type: string, input: unknown): Description {
     case "tool-retrieve_chunks": {
       const query = typeof data.query === "string" ? data.query : null;
       return {
-        label: query
-          ? `Searching memory · "${query}"`
-          : "Searching memory",
+        label: query ? `Searching memory · "${query}"` : "Searching memory",
         Icon: SearchIcon,
       };
     }
@@ -89,7 +88,9 @@ function describe(type: string, input: unknown): Description {
       const title = typeof data.title === "string" ? data.title : null;
       return {
         label: title ? `Drafting "${title}"` : "Drafting document",
-        Icon: SparklesIcon,
+        Icon: ({ className }: { className?: string }) => (
+          <DeepSearchMark className={className} size={14} />
+        ),
       };
     }
     default: {
@@ -183,10 +184,10 @@ export function DeepSearchToolStep({
       {hasDetails && (
         <div className="ml-[22px] mt-1 mb-2 space-y-1.5">
           {inputText !== null && (
-            <ToolPayload heading="Input" body={inputText} />
+            <ToolPayload body={inputText} heading="Input" />
           )}
           {outputText !== null && (
-            <ToolPayload heading="Output" body={outputText} />
+            <ToolPayload body={outputText} heading="Output" />
           )}
         </div>
       )}

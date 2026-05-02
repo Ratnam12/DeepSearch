@@ -1,11 +1,11 @@
 import { parse, unparse } from "papaparse";
 import { toast } from "sonner";
 import { Artifact } from "@/components/chat/create-artifact";
+import { DeepSearchMark } from "@/components/chat/deepsearch-mark";
 import {
   CopyIcon,
   LineChartIcon,
   RedoIcon,
-  SparklesIcon,
   UndoIcon,
 } from "@/components/chat/icons";
 import { SpreadsheetEditor } from "@/components/chat/sheet-editor";
@@ -86,7 +86,7 @@ export const sheetArtifact = new Artifact<"sheet", Metadata>({
   toolbar: [
     {
       description: "Format and clean data",
-      icon: <SparklesIcon />,
+      icon: <DeepSearchMark size={18} />,
       onClick: ({ sendMessage }) => {
         sendMessage({
           role: "user",
