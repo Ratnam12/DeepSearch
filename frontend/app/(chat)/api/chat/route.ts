@@ -133,6 +133,13 @@ export async function POST(request: Request) {
         // its default complexity-based router. The backend treats this as
         // an advisory hint — unknown model ids fall back to the default.
         model: selectedChatModel,
+        // Pass through to OpenRouter's session tracking so all generations
+        // for this conversation are grouped under one session and one
+        // user in the OpenRouter dashboard. Clerk's user id maps to
+        // OpenRouter's `user` field (max 128 chars, well within Clerk's
+        // ~32-char ids); the chat id is the session id.
+        session_id: id,
+        user_id: userId,
       }),
       signal: AbortSignal.timeout(BACKEND_TIMEOUT_MS),
     });

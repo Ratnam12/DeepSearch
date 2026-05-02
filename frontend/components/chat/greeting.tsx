@@ -26,7 +26,7 @@ export const Greeting = () => {
           className="size-14 dark:hidden"
           height={56}
           priority
-          src="/images/deepsearch-light.svg"
+          src="/images/deepsearch-light.png"
           width={56}
         />
         <Image
@@ -34,7 +34,7 @@ export const Greeting = () => {
           className="hidden size-14 dark:block"
           height={56}
           priority
-          src="/images/deepsearch-dark.svg"
+          src="/images/deepsearch-dark.png"
           width={56}
         />
       </motion.div>

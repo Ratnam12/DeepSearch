@@ -44,7 +44,7 @@ function PureChatHeader({
           className="size-6 dark:hidden"
           height={24}
           priority
-          src="/images/deepsearch-light.svg"
+          src="/images/deepsearch-light.png"
           width={24}
         />
         <Image
@@ -52,7 +52,7 @@ function PureChatHeader({
           className="hidden size-6 dark:block"
           height={24}
           priority
-          src="/images/deepsearch-dark.svg"
+          src="/images/deepsearch-dark.png"
           width={24}
         />
       </Link>

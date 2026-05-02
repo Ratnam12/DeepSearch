@@ -79,7 +79,7 @@ export function AppSidebar() {
                       className="size-5 dark:hidden"
                       height={20}
                       priority
-                      src="/images/deepsearch-light.svg"
+                      src="/images/deepsearch-light.png"
                       width={20}
                     />
                     <Image
@@ -87,7 +87,7 @@ export function AppSidebar() {
                       className="hidden size-5 dark:block"
                       height={20}
                       priority
-                      src="/images/deepsearch-dark.svg"
+                      src="/images/deepsearch-dark.png"
                       width={20}
                     />
                   </Link>
