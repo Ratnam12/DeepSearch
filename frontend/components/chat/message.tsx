@@ -91,7 +91,7 @@ function collectCitations(
 }
 
 const PurePreviewMessage = ({
-  addToolApprovalResponse,
+  addToolApprovalResponse: _addToolApprovalResponse,
   chatId,
   message,
   vote,
@@ -142,7 +142,16 @@ const PurePreviewMessage = ({
           attachment={{
             name: attachment.filename ?? "file",
             contentType: attachment.mediaType,
-            url: attachment.url,
+            pageCount:
+              "pageCount" in attachment &&
+              typeof attachment.pageCount === "number"
+                ? attachment.pageCount
+                : undefined,
+            url:
+              "displayUrl" in attachment &&
+              typeof attachment.displayUrl === "string"
+                ? attachment.displayUrl
+                : attachment.url,
           }}
           key={attachment.url}
         />

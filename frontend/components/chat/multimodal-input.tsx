@@ -291,8 +291,10 @@ function PureMultimodalInput({
       role: "user",
       parts: [
         ...attachments.map((attachment) => ({
+          displayUrl: attachment.url,
+          pageCount: attachment.pageCount,
           type: "file" as const,
-          url: attachment.url,
+          url: attachment.modelUrl ?? attachment.url,
           name: attachment.name,
           mediaType: attachment.contentType,
         })),
@@ -341,12 +343,13 @@ function PureMultimodalInput({
 
       if (response.ok) {
         const data = await response.json();
-        const { url, pathname, contentType, pageCount } = data;
+        const { url, pathname, contentType, modelUrl, pageCount } = data;
 
         return {
           url,
           name: pathname,
           contentType,
+          modelUrl,
           pageCount,
         };
       }

@@ -19,7 +19,9 @@ const filePartSchema = z.object({
     "image/heif",
     "application/pdf",
   ]),
+  displayUrl: z.string().min(1).optional(),
   name: z.string().min(1).max(100),
+  pageCount: z.number().int().positive().optional(),
   url: z.string().url(),
 });
 

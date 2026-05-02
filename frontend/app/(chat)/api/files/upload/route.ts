@@ -2,6 +2,7 @@ import { auth } from "@clerk/nextjs/server";
 import { put } from "@vercel/blob";
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { createBlobAccessSignature } from "../blob-access";
 
 // 25 MB covers iPhone HEICs and most research-paper PDFs without
 // pushing past Vercel Blob's per-request body limit on Hobby (≈ 50 MB).
@@ -63,7 +64,8 @@ export async function POST(request: Request) {
 
     try {
       const data = await put(`${safeName}`, fileBuffer, {
-        access: "public",
+        access: "private",
+        contentType: file.type,
       });
 
       let pageCount: number | undefined;
@@ -81,7 +83,22 @@ export async function POST(request: Request) {
         }
       }
 
-      return NextResponse.json({ ...data, pageCount });
+      const pathname = data.pathname;
+      const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+      const previewUrl = `${basePath}/api/files/blob?pathname=${encodeURIComponent(pathname)}`;
+      const modelUrl = new URL(previewUrl, request.url);
+      modelUrl.searchParams.set(
+        "signature",
+        createBlobAccessSignature(pathname)
+      );
+
+      return NextResponse.json({
+        ...data,
+        blobUrl: data.url,
+        modelUrl: modelUrl.toString(),
+        pageCount,
+        url: previewUrl,
+      });
     } catch (error) {
       // Surface the real Blob error so prod misconfigurations (missing
       // BLOB_READ_WRITE_TOKEN, quota, transient outage) don't hide
