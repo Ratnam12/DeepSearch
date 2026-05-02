@@ -1,5 +1,6 @@
 "use client";
 
+import { useClerk, useUser } from "@clerk/nextjs";
 import type { UseChatHelpers } from "@ai-sdk/react";
 import type { UIMessage } from "ai";
 import equal from "fast-deep-equal";
@@ -109,6 +110,8 @@ function PureMultimodalInput({
 }) {
   const router = useRouter();
   const { setTheme, resolvedTheme } = useTheme();
+  const { isSignedIn, isLoaded } = useUser();
+  const { openSignIn } = useClerk();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { width } = useWindowSize();
   const hasAutoFocused = useRef(false);
@@ -216,6 +219,19 @@ function PureMultimodalInput({
   const [slashIndex, setSlashIndex] = useState(0);
 
   const submitForm = useCallback(() => {
+    if (isLoaded && !isSignedIn) {
+      const pending = input.trim();
+      openSignIn({
+        forceRedirectUrl: pending
+          ? `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/?query=${encodeURIComponent(pending)}`
+          : `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/`,
+        signUpForceRedirectUrl: pending
+          ? `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/?query=${encodeURIComponent(pending)}`
+          : `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/`,
+      });
+      return;
+    }
+
     window.history.pushState(
       {},
       "",
@@ -254,6 +270,9 @@ function PureMultimodalInput({
     setLocalStorageInput,
     width,
     chatId,
+    isSignedIn,
+    isLoaded,
+    openSignIn,
   ]);
 
   const uploadFile = useCallback(async (file: File) => {

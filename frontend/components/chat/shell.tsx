@@ -1,5 +1,6 @@
 "use client";
 
+import { useUser } from "@clerk/nextjs";
 import { useEffect, useRef, useState } from "react";
 import {
   AlertDialog,
@@ -50,6 +51,11 @@ export function ChatShell() {
     null
   );
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const { isSignedIn } = useUser();
+  // Unauthenticated visitors of a public chat should still see the composer
+  // so they can trigger the sign-in modal. Signed-in non-owners remain
+  // read-only (isReadonly true, isSignedIn true → canCompose false).
+  const canCompose = !isReadonly || !isSignedIn;
   const isArtifactVisible = useArtifactSelector((state) => state.isVisible);
   const { setArtifact } = useArtifact();
 
@@ -106,7 +112,7 @@ export function ChatShell() {
             />
 
             <div className="sticky bottom-0 z-1 mx-auto flex w-full max-w-4xl gap-2 border-t-0 bg-background px-2 pb-3 md:px-4 md:pb-4">
-              {!isReadonly && (
+              {canCompose && (
                 <MultimodalInput
                   attachments={attachments}
                   chatId={chatId}
