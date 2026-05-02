@@ -16,6 +16,7 @@ from typing import Any
 
 import httpx
 from openai import AsyncOpenAI
+from types import SimpleNamespace
 
 from backend.cache import SemanticCache
 from backend.chunker import chunk_documents, chunk_text
@@ -488,6 +489,117 @@ async def run_agent(question: str) -> AsyncGenerator[dict[str, Any], None]:
         yield event
 
 
+async def _stream_completion(
+    model: str,
+    history: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+) -> AsyncGenerator[dict[str, Any], None]:
+    """Make a streaming chat-completion call to OpenRouter.
+
+    Yields ``{"type": "text", "content": <delta>}`` for each text token as
+    it arrives, then a final ``{"type": "_done", ...}`` event with an
+    accumulated message-like object whose surface matches what
+    :func:`_execute_tool_calls` expects from ``ChatCompletionMessage``:
+    ``.role``, ``.content``, ``.tool_calls`` (each with ``.id``, ``.type``,
+    ``.function.{name,arguments}``), and ``.model_dump(exclude_none=...)``.
+
+    Tool-call deltas are merged by index across chunks; OpenAI's streaming
+    protocol splits a single tool call's arguments into multiple chunks
+    keyed by ``index`` rather than ``id``.
+    """
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": history,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    if tools:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = "auto"
+
+    response_stream = await _openai_client.chat.completions.create(**kwargs)
+
+    accumulated_content = ""
+    tool_calls_by_index: dict[int, dict[str, Any]] = {}
+    finish_reason: str | None = None
+    role = "assistant"
+    usage = None
+
+    async for chunk in response_stream:
+        if getattr(chunk, "usage", None):
+            usage = chunk.usage
+        if not chunk.choices:
+            continue
+        choice = chunk.choices[0]
+        delta = choice.delta
+
+        if getattr(delta, "role", None):
+            role = delta.role
+
+        delta_content = getattr(delta, "content", None)
+        if delta_content:
+            accumulated_content += delta_content
+            yield {"type": "text", "content": delta_content}
+
+        delta_tool_calls = getattr(delta, "tool_calls", None) or []
+        for tc_delta in delta_tool_calls:
+            idx = tc_delta.index
+            entry = tool_calls_by_index.setdefault(
+                idx,
+                {"id": "", "type": "function", "function": {"name": "", "arguments": ""}},
+            )
+            if tc_delta.id:
+                entry["id"] = tc_delta.id
+            if tc_delta.type:
+                entry["type"] = tc_delta.type
+            fn_delta = getattr(tc_delta, "function", None)
+            if fn_delta:
+                if fn_delta.name:
+                    entry["function"]["name"] += fn_delta.name
+                if fn_delta.arguments:
+                    entry["function"]["arguments"] += fn_delta.arguments
+
+        if choice.finish_reason:
+            finish_reason = choice.finish_reason
+
+    if usage is not None:
+        await log_cost(model, usage.prompt_tokens, usage.completion_tokens)
+
+    tool_calls_sorted = [tool_calls_by_index[i] for i in sorted(tool_calls_by_index)]
+    tool_call_objs = [
+        SimpleNamespace(
+            id=tc["id"],
+            type=tc["type"],
+            function=SimpleNamespace(
+                name=tc["function"]["name"],
+                arguments=tc["function"]["arguments"],
+            ),
+        )
+        for tc in tool_calls_sorted
+    ]
+
+    final_content = accumulated_content if accumulated_content else None
+
+    def _model_dump(exclude_none: bool = True) -> dict[str, Any]:
+        out: dict[str, Any] = {"role": role}
+        if final_content is not None:
+            out["content"] = final_content
+        if tool_calls_sorted:
+            out["tool_calls"] = tool_calls_sorted
+        if exclude_none:
+            return {k: v for k, v in out.items() if v is not None}
+        return out
+
+    message = SimpleNamespace(
+        role=role,
+        content=final_content,
+        tool_calls=tool_call_objs or None,
+        model_dump=_model_dump,
+    )
+
+    yield {"type": "_done", "message": message, "finish_reason": finish_reason}
+
+
 async def _agent_loop(
     history: list[dict[str, Any]],
     score: int,
@@ -496,10 +608,12 @@ async def _agent_loop(
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Agentic loop: tool-call until the model signals stop, then synthesize.
 
-    For simple queries (complexity_score == 1) the existing single-pass
-    streaming synthesis is used.  For complex queries (score == 3) three
-    candidate answers are generated in parallel via the SynthesizeAnswer DSPy
-    module (pro model) and the best is selected by llm_judge (flash model).
+    For simple queries (complexity_score == 1) the model's final answer is
+    streamed token-by-token as it arrives — the user sees text fill in
+    rather than appearing all at once.  For complex queries (score == 3)
+    three candidate answers are generated in parallel via the
+    SynthesizeAnswer DSPy module and the best is selected by llm_judge;
+    that winner is then word-streamed.
 
     Yields dicts with key ``type`` set to one of:
     - ``"tool_call"``   — the model is invoking a tool.
@@ -513,16 +627,30 @@ async def _agent_loop(
     last_context: str = ""
 
     while True:
-        response = await _openai_client.chat.completions.create(
-            model=model,
-            messages=history,
-            tools=TOOLS,
-            tool_choice="auto",
+        # For score==3 we suppress the first-pass tokens because the
+        # multi-candidate path will replace them — letting the model's
+        # answer briefly stream then yanking it would be jarring.
+        suppress_text = score == 3
+        streamed_message = None
+        finish_reason: str | None = None
+
+        async for event in _stream_completion(
+            model=model, history=history, tools=TOOLS
+        ):
+            if event.get("type") == "_done":
+                streamed_message = event["message"]
+                finish_reason = event["finish_reason"]
+                continue
+            if event.get("type") == "text" and not suppress_text:
+                yield event
+
+        if streamed_message is None:
+            break
+
+        choice = SimpleNamespace(
+            message=streamed_message,
+            finish_reason=finish_reason,
         )
-        choice = response.choices[0]
-        usage = response.usage
-        if usage:
-            await log_cost(model, usage.prompt_tokens, usage.completion_tokens)
 
         if choice.finish_reason == "tool_calls":
             async for event in _execute_tool_calls(choice.message, history):
@@ -571,19 +699,13 @@ async def _agent_loop(
                 for word in re.split(r"(\s+)", winner):
                     if word:
                         yield {"type": "text", "content": word}
-            else:
-                # ── Single-pass path: use the answer already in this response.
-                # Making a second LLM call here was the source of empty answers —
-                # the model had already produced content; we just need to yield it.
-                if content:
-                    yield {"type": "text", "content": content}
+            # Single-pass path: text already streamed inside the
+            # _stream_completion call above — nothing more to yield here.
             break
 
-        # Unexpected finish reason (e.g. "length", "content_filter"): yield
-        # whatever partial content exists rather than returning empty-handed.
-        content = choice.message.content or ""
-        if content:
-            yield {"type": "text", "content": content}
+        # Unexpected finish reason (e.g. "length", "content_filter"): the
+        # streamed call already emitted whatever partial content arrived
+        # before the cut-off, so we just exit the loop.
         break
         
 
