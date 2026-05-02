@@ -463,17 +463,19 @@ async def run_chat(
         {"role": "system", "content": _SYSTEM_PROMPT},
         *messages,
     ]
-    score = complexity_score(question_text) if question_text else 1
-    if model:
-        chosen_model = model
-        # When the user explicitly picks a model, treat the request as
-        # complex enough to engage the multi-candidate synthesis path
-        # (the user is opting into the more expensive model on purpose).
-        if score == 1 and ":" in model:  # heuristic: branded model id
-            score = 1  # leave routing alone — only the *which* model
-                       # changes, not the strategy
-    else:
-        chosen_model = route_model(question_text) if question_text else FLASH
+    # Single-pass synthesis everywhere. The DSPy multi-candidate path
+    # (score == 3) was strictly non-streaming — it generated three full
+    # candidates and ran a judge before yielding any text — which made
+    # complex queries feel completely unresponsive in the chat UI. The
+    # single-pass path streams tokens live, so we always take it for
+    # now. The multi-candidate code is still in _agent_loop and can be
+    # re-enabled behind a `deep_research` flag later.
+    score = 1
+    chosen_model = (
+        model
+        if model
+        else (route_model(question_text) if question_text else FLASH)
+    )
 
     async for event in _agent_loop(history, score, chosen_model, question_text):
         yield event
