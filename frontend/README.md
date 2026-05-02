@@ -1,36 +1,58 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# DeepSearch — Frontend
 
-## Getting Started
+Next.js 16 + AI SDK 6 frontend for the DeepSearch agentic research assistant.
 
-First, run the development server:
+## Stack
+
+- **Next.js 16** (App Router, Turbopack)
+- **AI SDK 6** (`useChat`, UI Message Stream Protocol)
+- **Clerk** for authentication
+- **Drizzle ORM + Neon Postgres** for chat history persistence
+- **Vercel Blob** for image attachments
+- **shadcn/ui + Tailwind CSS 4** for the interface
+
+## Backend
+
+The Python FastAPI agent lives in [`../backend/`](../backend) and is deployed
+on Railway. The Next.js app proxies chat requests to its `/chat` endpoint
+and pipes the AI SDK UI Message Stream Protocol response back to the
+client.
+
+## Local development
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
+# from the repo root, link to the Vercel project (one-time)
+vercel link        # Team: ratnamsingh1201-8407s-projects, Project: deep-search
+
+# from /frontend/, pull env vars and install
+vercel env pull .env.development.local
+pnpm install
+
+# apply the latest Drizzle migrations to Neon
+pnpm db:migrate
+
+# run the dev server
 pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The dev server listens on http://localhost:3000. Unauthenticated requests
+redirect to `/sign-in`; sign in with a Clerk account to reach the chat UI.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Required env vars
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Pulled from Vercel via `vercel env pull`:
 
-## Learn More
+- `DATABASE_URL` (Neon Postgres)
+- `BLOB_READ_WRITE_TOKEN` (Vercel Blob)
+- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`
+- `NEXT_PUBLIC_API_URL` (Railway backend URL)
 
-To learn more about Next.js, take a look at the following resources:
+## Project layout
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `app/(chat)/` — main chat UI, history sidebar, artifact panel
+- `app/(chat)/api/chat/` — proxy route that forwards to the FastAPI backend
+- `app/sign-in/`, `app/sign-up/` — Clerk-hosted auth pages
+- `lib/db/` — Drizzle schema, queries, migrations
+- `lib/ai/` — model registry, prompts, document tools
+- `components/` — shadcn-based UI components
+- `proxy.ts` — Clerk middleware (auth gate)

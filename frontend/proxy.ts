@@ -1,12 +1,14 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 
+// Routes that don't need a Clerk session. Everything else (including the
+// chat UI, /api/chat proxy to FastAPI, history endpoints) requires sign-in.
 const isPublicRoute = createRouteMatcher([
-  "/search(.*)",
   "/sign-in(.*)",
   "/sign-up(.*)",
+  "/ping",
 ]);
 
-export default clerkMiddleware(async (auth, request) => {
+export const proxy = clerkMiddleware(async (auth, request) => {
   if (!isPublicRoute(request)) {
     await auth.protect();
   }
@@ -14,8 +16,9 @@ export default clerkMiddleware(async (auth, request) => {
 
 export const config = {
   matcher: [
+    // All app routes except static assets.
     "/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)",
-    // Clerk serves browser assets through this proxy path on custom domains.
+    // Clerk's internal asset proxy on custom domains.
     "/(_clerk|api|trpc)(.*)",
   ],
 };
