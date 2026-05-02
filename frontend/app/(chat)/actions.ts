@@ -1,12 +1,9 @@
 "use server";
 
-import { generateText, type UIMessage } from "ai";
-import { cookies } from "next/headers";
 import { auth } from "@clerk/nextjs/server";
+import type { UIMessage } from "ai";
+import { cookies } from "next/headers";
 import type { VisibilityType } from "@/components/chat/visibility-selector";
-import { titleModel } from "@/lib/ai/models";
-import { titlePrompt } from "@/lib/ai/prompts";
-import { getTitleModel } from "@/lib/ai/providers";
 import {
   deleteMessagesByChatIdAfterTimestamp,
   getChatById,
@@ -14,6 +11,8 @@ import {
   updateChatVisibilityById,
 } from "@/lib/db/queries";
 import { getTextFromMessage } from "@/lib/utils";
+
+const TITLE_MAX_CHARS = 60;
 
 export async function saveChatModelAsCookie(model: string) {
   const cookieStore = await cookies();
@@ -24,19 +23,25 @@ export async function generateTitleFromUserMessage({
   message,
 }: {
   message: UIMessage;
-}) {
-  const { text } = await generateText({
-    model: getTitleModel(),
-    system: titlePrompt,
-    prompt: getTextFromMessage(message),
-    providerOptions: {
-      gateway: { order: titleModel.gatewayOrder },
-    },
-  });
-  return text
-    .replace(/^[#*"\s]+/, "")
-    .replace(/["]+$/, "")
-    .trim();
+}): Promise<string> {
+  // Title generation deliberately does not call any LLM — DeepSearch routes
+  // every model call through the FastAPI/OpenRouter backend, so reaching
+  // for Vercel AI Gateway here would require a separate billing setup we
+  // don't need. A truncated copy of the first user message is a perfectly
+  // good chat title and matches what most chat UIs do as their initial
+  // label until a human renames the thread.
+  const text = getTextFromMessage(message).trim().replace(/\s+/g, " ");
+  if (!text) {
+    return "New chat";
+  }
+  if (text.length <= TITLE_MAX_CHARS) {
+    return text;
+  }
+  // Try to break on the nearest word boundary.
+  const truncated = text.slice(0, TITLE_MAX_CHARS);
+  const lastSpace = truncated.lastIndexOf(" ");
+  const head = lastSpace > 30 ? truncated.slice(0, lastSpace) : truncated;
+  return `${head}…`;
 }
 
 export async function deleteTrailingMessages({ id }: { id: string }) {

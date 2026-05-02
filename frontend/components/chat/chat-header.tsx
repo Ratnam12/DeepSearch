@@ -1,11 +1,11 @@
 "use client";
 
 import { PanelLeftIcon } from "lucide-react";
+import Image from "next/image";
 import Link from "next/link";
 import { memo } from "react";
 import { Button } from "@/components/ui/button";
 import { useSidebar } from "@/components/ui/sidebar";
-import { VercelIcon } from "./icons";
 import { VisibilitySelector, type VisibilityType } from "./visibility-selector";
 
 function PureChatHeader({
@@ -35,12 +35,26 @@ function PureChatHeader({
       </Button>
 
       <Link
-        className="flex size-8 items-center justify-center rounded-lg md:hidden"
-        href="https://vercel.com/templates/next.js/chatbot"
-        rel="noopener noreferrer"
-        target="_blank"
+        aria-label="DeepSearch home"
+        className="flex items-center gap-2 md:hidden"
+        href="/"
       >
-        <VercelIcon size={14} />
+        <Image
+          alt="DeepSearch"
+          className="size-6 dark:hidden"
+          height={24}
+          priority
+          src="/images/deepsearch-light.svg"
+          width={24}
+        />
+        <Image
+          alt="DeepSearch"
+          className="hidden size-6 dark:block"
+          height={24}
+          priority
+          src="/images/deepsearch-dark.svg"
+          width={24}
+        />
       </Link>
 
       {!isReadonly && (
@@ -49,20 +63,6 @@ function PureChatHeader({
           selectedVisibilityType={selectedVisibilityType}
         />
       )}
-
-      <Button
-        asChild
-        className="hidden rounded-lg bg-foreground px-4 text-background hover:bg-foreground/90 md:ml-auto md:flex"
-      >
-        <Link
-          href="https://vercel.com/templates/next.js/chatbot"
-          rel="noopener noreferrer"
-          target="_blank"
-        >
-          <VercelIcon size={16} />
-          Deploy with Vercel
-        </Link>
-      </Button>
     </header>
   );
 }

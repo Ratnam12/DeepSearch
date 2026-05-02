@@ -7,7 +7,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://deepsearch.ai"),
+  metadataBase: new URL("https://trydeepsearch.com"),
   title: "DeepSearch",
   description: "Agentic research assistant with grounded citations.",
 };

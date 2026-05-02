@@ -1,12 +1,8 @@
 "use client";
 
 import { useUser } from "@clerk/nextjs";
-import {
-  MessageSquareIcon,
-  PanelLeftIcon,
-  PenSquareIcon,
-  TrashIcon,
-} from "lucide-react";
+import { PanelLeftIcon, PenSquareIcon, TrashIcon } from "lucide-react";
+import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
@@ -75,10 +71,25 @@ export function AppSidebar() {
                 <SidebarMenuButton
                   asChild
                   className="size-8 !px-0 items-center justify-center group-data-[collapsible=icon]:group-hover/logo:opacity-0"
-                  tooltip="Chatbot"
+                  tooltip="DeepSearch"
                 >
                   <Link href="/" onClick={() => setOpenMobile(false)}>
-                    <MessageSquareIcon className="size-4 text-sidebar-foreground/50" />
+                    <Image
+                      alt="DeepSearch"
+                      className="size-5 dark:hidden"
+                      height={20}
+                      priority
+                      src="/images/deepsearch-light.svg"
+                      width={20}
+                    />
+                    <Image
+                      alt="DeepSearch"
+                      className="hidden size-5 dark:block"
+                      height={20}
+                      priority
+                      src="/images/deepsearch-dark.svg"
+                      width={20}
+                    />
                   </Link>
                 </SidebarMenuButton>
                 <Tooltip>

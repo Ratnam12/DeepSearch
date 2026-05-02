@@ -522,10 +522,11 @@ function PureMultimodalInput({
               selectedModelId={selectedModelId}
               status={status}
             />
-            <ModelSelectorCompact
-              onModelChange={onModelChange}
-              selectedModelId={selectedModelId}
-            />
+            {/* DeepSearch routes models on the FastAPI side (complexity-based:
+                flash for simple queries, pro for complex). Surfacing a
+                client-side picker would be misleading since the backend
+                ignores it — the inline selector that shipped with the
+                chatbot template is hidden for that reason. */}
           </PromptInputTools>
 
           {status === "submitted" ? (
