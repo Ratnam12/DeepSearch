@@ -29,6 +29,17 @@ type ToolStepState =
   | "output-error"
   | "output-denied";
 
+// Loose shape covering both static `tool-<name>` parts and
+// `dynamic-tool` parts coming back from the AI SDK stream.
+export type DeepSearchToolPart = {
+  type: string;
+  toolCallId?: string;
+  state?: ToolStepState;
+  input?: unknown;
+  output?: unknown;
+  toolName?: string;
+};
+
 const isInProgress = (state: ToolStepState) =>
   state === "input-streaming" ||
   state === "input-available" ||

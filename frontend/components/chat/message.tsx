@@ -6,12 +6,45 @@ import { cn, sanitizeText } from "@/lib/utils";
 import { MessageContent, MessageResponse } from "../ai-elements/message";
 import { Shimmer } from "../ai-elements/shimmer";
 import { useDataStream } from "./data-stream-provider";
-import { DeepSearchToolStep } from "./deepsearch-tool-step";
+import { DeepSearchToolGroup } from "./deepsearch-tool-group";
+import type { DeepSearchToolPart } from "./deepsearch-tool-step";
 import { DocumentPreview } from "./document-preview";
 import { SparklesIcon } from "./icons";
 import { MessageActions } from "./message-actions";
 import { MessageReasoning } from "./message-reasoning";
 import { PreviewAttachment } from "./preview-attachment";
+
+// Tool parts that get the special grouped/collapsible treatment. The
+// document tools (createDocument / updateDocument) keep their existing
+// inline-card UI since those are the actual artifact previews, not
+// research steps.
+const STEP_TOOL_TYPES = new Set([
+  "tool-web_search",
+  "tool-retrieve_chunks",
+  "tool-scrape_and_index",
+  "tool-create_artifact",
+]);
+
+function isStepTool(part: { type: string }): boolean {
+  if (part.type === "dynamic-tool") {
+    return true;
+  }
+  if (STEP_TOOL_TYPES.has(part.type)) {
+    return true;
+  }
+  // Any unknown `tool-*` that isn't one of our document tools is treated
+  // as a research step too — we'd rather group too eagerly than show
+  // raw JSON for a tool the UI doesn't have a custom card for.
+  if (
+    part.type.startsWith("tool-") &&
+    part.type !== "tool-createDocument" &&
+    part.type !== "tool-updateDocument" &&
+    part.type !== "tool-editDocument"
+  ) {
+    return true;
+  }
+  return false;
+}
 
 const PurePreviewMessage = ({
   addToolApprovalResponse,
@@ -87,7 +120,68 @@ const PurePreviewMessage = ({
     { text: "", isStreaming: false, rendered: false }
   ) ?? { text: "", isStreaming: false, rendered: false };
 
-  const parts = message.parts?.map((part, index) => {
+  // Pre-pass: group consecutive research-step tool parts into a single
+  // collapsible block. Whether the block defaults to expanded depends on
+  // whether any text part appears later in the message — once the answer
+  // starts streaming, the steps fold up to a one-line summary so the
+  // answer is the focal point.
+  const rawParts = message.parts ?? [];
+  type RenderItem =
+    | { kind: "single"; part: ChatMessage["parts"][number]; index: number }
+    | {
+        kind: "tool-group";
+        tools: DeepSearchToolPart[];
+        firstIndex: number;
+        collapsed: boolean;
+      };
+
+  const renderItems: RenderItem[] = [];
+  for (let i = 0; i < rawParts.length; i += 1) {
+    const part = rawParts[i];
+    if (isStepTool(part)) {
+      const groupStart = i;
+      const groupTools: DeepSearchToolPart[] = [];
+      while (i < rawParts.length && isStepTool(rawParts[i])) {
+        groupTools.push(rawParts[i] as DeepSearchToolPart);
+        i += 1;
+      }
+      // Look ahead to see if there's substantive text content following
+      // this group anywhere in the message — that triggers the auto-
+      // collapse so the answer takes focus.
+      const collapsed = rawParts.slice(i).some(
+        (p) =>
+          (p.type === "text" && p.text?.trim().length > 0) ||
+          (p.type === "reasoning" &&
+            "text" in p &&
+            (p as { text?: string }).text?.trim().length)
+      );
+      renderItems.push({
+        kind: "tool-group",
+        tools: groupTools,
+        firstIndex: groupStart,
+        collapsed,
+      });
+      i -= 1; // outer loop will i += 1
+      continue;
+    }
+    renderItems.push({ kind: "single", part, index: i });
+  }
+
+  const parts = renderItems.map((item) => {
+    if (item.kind === "tool-group") {
+      const firstId =
+        (item.tools[0] as { toolCallId?: string }).toolCallId ??
+        `${message.id}-group-${item.firstIndex}`;
+      return (
+        <DeepSearchToolGroup
+          collapsed={item.collapsed}
+          key={`tool-group-${firstId}`}
+          tools={item.tools}
+        />
+      );
+    }
+
+    const { part, index } = item;
     const { type } = part;
     const key = `message-${message.id}-part-${index}`;
 
@@ -165,38 +259,6 @@ const PurePreviewMessage = ({
             result={part.output}
           />
         </div>
-      );
-    }
-
-    // Catch-all for DeepSearch's backend tools (web_search,
-    // retrieve_chunks, scrape_and_index, create_artifact). Renders as a
-    // single subtle status line — see DeepSearchToolStep for the design
-    // rationale.
-    if (type.startsWith("tool-")) {
-      const toolPart = part as {
-        toolCallId?: string;
-        state?: string;
-        input?: unknown;
-        output?: unknown;
-      };
-      const toolCallId = toolPart.toolCallId ?? `${key}-tool`;
-      return (
-        <DeepSearchToolStep
-          input={toolPart.input}
-          key={toolCallId}
-          output={toolPart.output}
-          state={
-            (toolPart.state as
-              | "input-streaming"
-              | "input-available"
-              | "approval-requested"
-              | "approval-responded"
-              | "output-available"
-              | "output-error"
-              | "output-denied") ?? "input-available"
-          }
-          type={type}
-        />
       );
     }
 

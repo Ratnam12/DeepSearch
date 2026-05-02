@@ -101,7 +101,25 @@ export async function POST(request: Request) {
   }
 
   // ── Translate to OpenAI-format messages and forward ────────────────────
-  const modelMessages = await convertToModelMessages(uiMessages);
+  // Strip tool-* / dynamic-tool / data-* parts from prior turns before
+  // converting. DeepSearch tools are stateless — the model can re-run
+  // web_search / retrieve_chunks for any new question — so leaving prior
+  // tool_call/tool_result pairs in the history is purely a liability.
+  // OpenRouter's chat-completions → responses-API translation (used for
+  // some Azure-served OpenAI models) sometimes drops tool_call_id on
+  // those pairs and the upstream rejects with
+  // "Missing required parameter: input[N].call_id". Text-only history
+  // round-trips cleanly across every provider.
+  const historyForModel = uiMessages.map((msg) => ({
+    ...msg,
+    parts: msg.parts.filter(
+      (part) =>
+        part.type === "text" ||
+        part.type === "reasoning" ||
+        part.type === "file"
+    ),
+  }));
+  const modelMessages = await convertToModelMessages(historyForModel);
 
   let backendResponse: Response;
   try {
