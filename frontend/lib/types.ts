@@ -47,6 +47,14 @@ export type CustomUIDataTypes = {
     title: string;
     content: string;
   };
+  // [N] → source URL mapping emitted after each retrieve_chunks tool
+  // call. The frontend rewrites bracketed citations in the assistant's
+  // streamed answer into clickable links pointing to the source.
+  citations: Array<{
+    index: number;
+    url: string;
+    score?: number;
+  }>;
 };
 
 export type ChatMessage = UIMessage<

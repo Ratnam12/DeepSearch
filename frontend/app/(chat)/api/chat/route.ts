@@ -354,6 +354,22 @@ async function persistFromStream({
             }
             break;
           }
+          case "data-citations": {
+            // Carry citations through to the persisted message so a
+            // reload keeps the [N] → URL mapping intact and the
+            // bracketed citations stay clickable.
+            if (Array.isArray(part.data)) {
+              assistantParts.push({
+                type: "data-citations",
+                id:
+                  typeof (part as { id?: string }).id === "string"
+                    ? (part as { id: string }).id
+                    : `cite-${assistantParts.length}`,
+                data: part.data,
+              });
+            }
+            break;
+          }
           default:
             // Forward-compat: ignore anything we don't recognise.
             break;

@@ -66,6 +66,15 @@ export function useScrollToBottom() {
     const scrollIfNeeded = () => {
       if (isAtBottomRef.current && !isUserScrollingRef.current) {
         requestAnimationFrame(() => {
+          // Re-check inside the rAF — a fast scroll-up gesture
+          // (especially trackpad) often lands between the time we
+          // schedule this callback and the time it runs. Without this
+          // guard, we'd snap the user back to the bottom on every
+          // streaming chunk and they'd be unable to read the tool
+          // calls that happened earlier in the response.
+          if (!isAtBottomRef.current || isUserScrollingRef.current) {
+            return;
+          }
           container.scrollTo({
             top: container.scrollHeight,
             behavior: "instant",

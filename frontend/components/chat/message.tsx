@@ -46,6 +46,45 @@ function isStepTool(part: { type: string }): boolean {
   return false;
 }
 
+// Rewrites bracketed citations (`[1]`, `[2]`) in markdown text into
+// clickable links pointing at their source URL. The mapping comes from
+// `data-citations` parts emitted after each retrieve_chunks tool call.
+// Markdown link text uses escaped square brackets so streamdown still
+// renders the visible label as `[N]`.
+function linkifyCitations(
+  text: string,
+  citations: Map<number, string>
+): string {
+  if (citations.size === 0) {
+    return text;
+  }
+  return text.replace(/\[(\d+)\]/g, (match, idxStr) => {
+    const idx = Number.parseInt(idxStr, 10);
+    const url = citations.get(idx);
+    return url ? `[\\[${idx}\\]](${url})` : match;
+  });
+}
+
+function collectCitations(
+  parts: ReadonlyArray<{ type: string; data?: unknown }>
+): Map<number, string> {
+  const map = new Map<number, string>();
+  for (const part of parts) {
+    if (part.type !== "data-citations" || !Array.isArray(part.data)) {
+      continue;
+    }
+    for (const item of part.data as Array<{
+      index?: number;
+      url?: string;
+    }>) {
+      if (typeof item.index === "number" && typeof item.url === "string" && item.url) {
+        map.set(item.index, item.url);
+      }
+    }
+  }
+  return map;
+}
+
 const PurePreviewMessage = ({
   addToolApprovalResponse,
   chatId,
@@ -126,6 +165,7 @@ const PurePreviewMessage = ({
   // starts streaming, the steps fold up to a one-line summary so the
   // answer is the focal point.
   const rawParts = message.parts ?? [];
+  const citations = collectCitations(rawParts);
   type RenderItem =
     | { kind: "single"; part: ChatMessage["parts"][number]; index: number }
     | {
@@ -200,6 +240,10 @@ const PurePreviewMessage = ({
     }
 
     if (type === "text") {
+      const rendered =
+        message.role === "assistant"
+          ? linkifyCitations(sanitizeText(part.text), citations)
+          : sanitizeText(part.text);
       return (
         <MessageContent
           className={cn("text-[13px] leading-[1.65]", {
@@ -209,7 +253,7 @@ const PurePreviewMessage = ({
           data-testid="message-content"
           key={key}
         >
-          <MessageResponse>{sanitizeText(part.text)}</MessageResponse>
+          <MessageResponse>{rendered}</MessageResponse>
         </MessageContent>
       );
     }
