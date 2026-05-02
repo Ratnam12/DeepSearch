@@ -364,10 +364,15 @@ async function persistFromStream({
     return;
   }
 
-  const finalId =
-    assistantMessageId && !knownMessageIds.has(assistantMessageId)
-      ? assistantMessageId
-      : generateUUID();
+  // Use a fresh UUID for the DB row regardless of what FastAPI sent in
+  // the `start` event — FastAPI emits `msg_<hex>` (AI SDK convention)
+  // which isn't valid for the Postgres `uuid` column on Message_v2 and
+  // would fail the insert with a 22P02 invalid input syntax error.
+  // (`assistantMessageId` and `knownMessageIds` are still useful for
+  // future client-side dedup, but the DB doesn't need them.)
+  void assistantMessageId;
+  void knownMessageIds;
+  const finalId = generateUUID();
 
   try {
     await saveMessages({

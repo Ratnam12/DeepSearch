@@ -203,7 +203,15 @@ export async function getChatById({ id }: { id: string }) {
 export async function saveMessages({ messages }: { messages: DBMessage[] }) {
   try {
     return await db.insert(message).values(messages);
-  } catch (_error) {
+  } catch (error) {
+    // Surface the underlying Postgres error in logs — the wrapped
+    // ChatbotError loses the cause, which made debugging the assistant-
+    // message uuid mismatch much harder than it needed to be.
+    console.error("saveMessages failed", {
+      count: messages.length,
+      ids: messages.map((m) => m.id),
+      error: error instanceof Error ? error.message : String(error),
+    });
     throw new ChatbotError("bad_request:database", "Failed to save messages");
   }
 }
