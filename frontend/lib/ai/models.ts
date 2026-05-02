@@ -1,11 +1,18 @@
-export const DEFAULT_CHAT_MODEL = "moonshotai/kimi-k2.5";
+// Model catalogue surfaced in the chat dropdown. Ids match OpenRouter's
+// `<provider>/<model>` convention so the FastAPI agent (which talks to
+// OpenRouter via the OpenAI-compatible client) can pass them through
+// verbatim. The Next.js proxy forwards `selectedChatModel` as the
+// `model` field on POST /chat; the agent uses it to override its
+// complexity-based router (flash for simple, pro for complex).
+
+export const DEFAULT_CHAT_MODEL = "openai/gpt-5.5";
 
 export const titleModel = {
-  id: "mistral/mistral-small",
-  name: "Mistral Small",
-  provider: "mistral",
+  id: "openai/gpt-5.4-mini",
+  name: "GPT-5.4 mini",
+  provider: "openai",
   description: "Fast model for title generation",
-  gatewayOrder: ["mistral"],
+  gatewayOrder: ["openai"],
 };
 
 export type ModelCapabilities = {
@@ -23,144 +30,106 @@ export type ChatModel = {
   reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high";
 };
 
+// Curated list of models, ordered roughly by capability tier. The agent
+// will accept any OpenRouter model id, but the dropdown shows these
+// because they're the ones we've validated with the tool-calling loop.
 export const chatModels: ChatModel[] = [
   {
-    id: "deepseek/deepseek-v3.2",
-    name: "DeepSeek V3.2",
-    provider: "deepseek",
-    description: "Fast and capable model with tool use",
-    gatewayOrder: ["bedrock", "deepinfra"],
+    id: "openai/gpt-5.5",
+    name: "GPT-5.5",
+    provider: "openai",
+    description: "OpenAI flagship — best for complex multi-hop research",
   },
   {
-    id: "mistral/codestral",
-    name: "Codestral",
-    provider: "mistral",
-    description: "Code-focused model with tool use",
-    gatewayOrder: ["mistral"],
+    id: "openai/gpt-5.4-mini",
+    name: "GPT-5.4 mini",
+    provider: "openai",
+    description: "Fast and cheap, great for short queries",
   },
   {
-    id: "mistral/mistral-small",
-    name: "Mistral Small",
-    provider: "mistral",
-    description: "Fast vision model with tool use",
-    gatewayOrder: ["mistral"],
+    id: "google/gemini-3.1-pro",
+    name: "Gemini 3.1 Pro",
+    provider: "google",
+    description: "Google's flagship — strong reasoning and long context",
+  },
+  {
+    id: "google/gemini-3.0-flash",
+    name: "Gemini 3.0 Flash",
+    provider: "google",
+    description: "Google's fast tier — good for quick lookups",
+  },
+  {
+    id: "anthropic/claude-opus-4.7",
+    name: "Claude Opus 4.7",
+    provider: "anthropic",
+    description: "Anthropic flagship — careful, citation-friendly",
+  },
+  {
+    id: "anthropic/claude-sonnet-4.6",
+    name: "Claude Sonnet 4.6",
+    provider: "anthropic",
+    description: "Balanced cost and quality from Anthropic",
   },
   {
     id: "moonshotai/kimi-k2.5",
     name: "Kimi K2.5",
     provider: "moonshotai",
-    description: "Moonshot AI flagship model",
-    gatewayOrder: ["fireworks", "bedrock"],
+    description: "Moonshot AI flagship",
   },
   {
-    id: "openai/gpt-oss-20b",
-    name: "GPT OSS 20B",
-    provider: "openai",
-    description: "Compact reasoning model",
-    gatewayOrder: ["groq", "bedrock"],
-    reasoningEffort: "low",
+    id: "deepseek/deepseek-v3.2",
+    name: "DeepSeek V3.2",
+    provider: "deepseek",
+    description: "Fast and capable open-weights model",
   },
   {
-    id: "openai/gpt-oss-120b",
-    name: "GPT OSS 120B",
-    provider: "openai",
-    description: "Open-source 120B parameter model",
-    gatewayOrder: ["fireworks", "bedrock"],
-    reasoningEffort: "low",
-  },
-  {
-    id: "xai/grok-4.1-fast-non-reasoning",
-    name: "Grok 4.1 Fast",
+    id: "xai/grok-4.1",
+    name: "Grok 4.1",
     provider: "xai",
-    description: "Fast non-reasoning model with tool use",
-    gatewayOrder: ["xai"],
+    description: "xAI's latest with web-aware tool use",
   },
 ];
 
-export async function getCapabilities(): Promise<
-  Record<string, ModelCapabilities>
-> {
-  const results = await Promise.all(
-    chatModels.map(async (model) => {
-      try {
-        const res = await fetch(
-          `https://ai-gateway.vercel.sh/v1/models/${model.id}/endpoints`,
-          { next: { revalidate: 86_400 } }
-        );
-        if (!res.ok) {
-          return [model.id, { tools: false, vision: false, reasoning: false }];
-        }
+// The capability lookup in the chatbot template hit Vercel AI Gateway's
+// /v1/models endpoint to populate tool/vision/reasoning flags. We don't
+// route through that gateway, so we hand-mark capabilities for the
+// curated list. The agent calls the OpenRouter chat-completion API which
+// always supports tools; vision flags here are advisory for the UI's
+// attachment button.
+const CAPABILITIES: Record<string, ModelCapabilities> = {
+  "openai/gpt-5.5": { tools: true, vision: true, reasoning: false },
+  "openai/gpt-5.4-mini": { tools: true, vision: true, reasoning: false },
+  "google/gemini-3.1-pro": { tools: true, vision: true, reasoning: true },
+  "google/gemini-3.0-flash": { tools: true, vision: true, reasoning: false },
+  "anthropic/claude-opus-4.7": { tools: true, vision: true, reasoning: true },
+  "anthropic/claude-sonnet-4.6": { tools: true, vision: true, reasoning: true },
+  "moonshotai/kimi-k2.5": { tools: true, vision: false, reasoning: false },
+  "deepseek/deepseek-v3.2": { tools: true, vision: false, reasoning: false },
+  "xai/grok-4.1": { tools: true, vision: true, reasoning: false },
+};
 
-        const json = await res.json();
-        const endpoints = json.data?.endpoints ?? [];
-        const params = new Set(
-          endpoints.flatMap(
-            (e: { supported_parameters?: string[] }) =>
-              e.supported_parameters ?? []
-          )
-        );
-        const inputModalities = new Set(
-          json.data?.architecture?.input_modalities ?? []
-        );
-
-        return [
-          model.id,
-          {
-            tools: params.has("tools"),
-            vision: inputModalities.has("image"),
-            reasoning: params.has("reasoning"),
-          },
-        ];
-      } catch {
-        return [model.id, { tools: false, vision: false, reasoning: false }];
-      }
-    })
-  );
-
-  return Object.fromEntries(results);
+export function getCapabilities(): Record<string, ModelCapabilities> {
+  return CAPABILITIES;
 }
 
 export const isDemo = process.env.IS_DEMO === "1";
-
-type GatewayModel = {
-  id: string;
-  name: string;
-  type?: string;
-  tags?: string[];
-};
 
 export type GatewayModelWithCapabilities = ChatModel & {
   capabilities: ModelCapabilities;
 };
 
-export async function getAllGatewayModels(): Promise<
-  GatewayModelWithCapabilities[]
-> {
-  try {
-    const res = await fetch("https://ai-gateway.vercel.sh/v1/models", {
-      next: { revalidate: 86_400 },
-    });
-    if (!res.ok) {
-      return [];
-    }
-
-    const json = await res.json();
-    return (json.data ?? [])
-      .filter((m: GatewayModel) => m.type === "language")
-      .map((m: GatewayModel) => ({
-        id: m.id,
-        name: m.name,
-        provider: m.id.split("/")[0],
-        description: "",
-        capabilities: {
-          tools: m.tags?.includes("tool-use") ?? false,
-          vision: m.tags?.includes("vision") ?? false,
-          reasoning: m.tags?.includes("reasoning") ?? false,
-        },
-      }));
-  } catch {
-    return [];
-  }
+// Dynamic model discovery is disabled — DeepSearch ships a curated list
+// of OpenRouter models. Returning the curated list keeps the model
+// dropdown working without round-tripping to Vercel AI Gateway.
+export function getAllGatewayModels(): GatewayModelWithCapabilities[] {
+  return chatModels.map((model) => ({
+    ...model,
+    capabilities: CAPABILITIES[model.id] ?? {
+      tools: false,
+      vision: false,
+      reasoning: false,
+    },
+  }));
 }
 
 export function getActiveModels(): ChatModel[] {
