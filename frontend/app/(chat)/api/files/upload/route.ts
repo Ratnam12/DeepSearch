@@ -4,14 +4,27 @@ import { z } from "zod";
 
 import { auth } from "@clerk/nextjs/server";
 
+// 25 MB covers iPhone HEICs and most research-paper PDFs without
+// pushing past Vercel Blob's per-request body limit on Hobby (≈ 50 MB).
+const MAX_BYTES = 25 * 1024 * 1024;
+
+const ALLOWED_TYPES = [
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+  "image/heic",
+  "image/heif",
+];
+
 const FileSchema = z.object({
   file: z
     .instanceof(Blob)
-    .refine((file) => file.size <= 5 * 1024 * 1024, {
-      message: "File size should be less than 5MB",
+    .refine((file) => file.size <= MAX_BYTES, {
+      message: "File size should be 25MB or less",
     })
-    .refine((file) => ["image/jpeg", "image/png"].includes(file.type), {
-      message: "File type should be JPEG or PNG",
+    .refine((file) => ALLOWED_TYPES.includes(file.type), {
+      message: `Unsupported file type. Allowed: ${ALLOWED_TYPES.join(", ")}`,
     }),
 });
 
@@ -54,12 +67,22 @@ export async function POST(request: Request) {
       });
 
       return NextResponse.json(data);
-    } catch (_error) {
-      return NextResponse.json({ error: "Upload failed" }, { status: 500 });
+    } catch (error) {
+      // Surface the real Blob error so prod misconfigurations (missing
+      // BLOB_READ_WRITE_TOKEN, quota, transient outage) don't hide
+      // behind a generic toast.
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("Vercel Blob put() failed", { error });
+      return NextResponse.json(
+        { error: `Upload failed: ${message}` },
+        { status: 500 }
+      );
     }
-  } catch (_error) {
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("Failed to process upload request", { error });
     return NextResponse.json(
-      { error: "Failed to process request" },
+      { error: `Failed to process request: ${message}` },
       { status: 500 }
     );
   }
