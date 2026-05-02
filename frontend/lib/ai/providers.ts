@@ -1,30 +1,15 @@
-import { customProvider, gateway } from "ai";
-import { isTestEnvironment } from "../constants";
+import { gateway } from "ai";
 import { titleModel } from "./models";
 
-export const myProvider = isTestEnvironment
-  ? (() => {
-      const { chatModel, titleModel } = require("./models.mock");
-      return customProvider({
-        languageModels: {
-          "chat-model": chatModel,
-          "title-model": titleModel,
-        },
-      });
-    })()
-  : null;
+// DeepSearch runs the agent + LLM on the FastAPI backend, so the frontend
+// only needs the AI Gateway-based provider for the title-generation server
+// action. The chatbot template's mock-test branch was removed alongside
+// its e2e tests.
 
 export function getLanguageModel(modelId: string) {
-  if (isTestEnvironment && myProvider) {
-    return myProvider.languageModel(modelId);
-  }
-
   return gateway.languageModel(modelId);
 }
 
 export function getTitleModel() {
-  if (isTestEnvironment && myProvider) {
-    return myProvider.languageModel("title-model");
-  }
   return gateway.languageModel(titleModel.id);
 }

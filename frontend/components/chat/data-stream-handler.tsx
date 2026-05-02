@@ -80,6 +80,28 @@ export function DataStreamHandler() {
               status: "idle",
             };
 
+          // DeepSearch's create_artifact tool emits a single fully-formed
+          // payload (kind+title+content together) rather than the chatbot
+          // template's incremental data-kind/title/clear/textDelta sequence.
+          // Snap straight to "idle" with the panel open.
+          case "data-artifact": {
+            const payload = delta.data as {
+              id: string;
+              kind: "text" | "code" | "sheet";
+              title: string;
+              content: string;
+            };
+            return {
+              ...draftArtifact,
+              documentId: payload.id,
+              kind: payload.kind,
+              title: payload.title,
+              content: payload.content,
+              status: "idle",
+              isVisible: true,
+            };
+          }
+
           default:
             return draftArtifact;
         }
