@@ -47,10 +47,16 @@ function PureSuggestedActions({ chatId, sendMessage }: SuggestedActionsProps) {
             className="h-auto w-full whitespace-nowrap rounded-xl border border-border/50 bg-card/30 px-4 py-3 text-left text-[12px] leading-relaxed text-muted-foreground transition-all duration-200 sm:whitespace-normal sm:p-4 sm:text-[13px] hover:-translate-y-0.5 hover:bg-card/60 hover:text-foreground hover:shadow-[var(--shadow-card)]"
             onClick={(suggestion) => {
               if (isLoaded && !isSignedIn) {
-                openSignIn({
-                  forceRedirectUrl: `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/?query=${encodeURIComponent(suggestion)}`,
-                  signUpForceRedirectUrl: `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/?query=${encodeURIComponent(suggestion)}`,
-                });
+                const sourcePath = typeof window !== "undefined" ? window.location.pathname : "";
+                const sourceMatch = sourcePath.match(/\/chat\/([^/?#]+)/);
+                const fromChat = sourceMatch?.[1];
+                const base = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+                const qs = [
+                  `query=${encodeURIComponent(suggestion)}`,
+                  fromChat ? `fromChat=${fromChat}` : "",
+                ].filter(Boolean).join("&");
+                const target = `${base}/?${qs}`;
+                openSignIn({ forceRedirectUrl: target, signUpForceRedirectUrl: target });
                 return;
               }
               window.history.pushState(

@@ -4,6 +4,7 @@ import type { ArtifactKind } from "@/components/chat/artifact";
 import {
   deleteDocumentsByIdAfterTimestamp,
   getDocumentsById,
+  getDocumentsByUserAndId,
   saveDocument,
   updateDocumentContent,
 } from "@/lib/db/queries";
@@ -33,16 +34,10 @@ export async function GET(request: Request) {
     return new ChatbotError("unauthorized:document").toResponse();
   }
 
-  const documents = await getDocumentsById({ id });
+  const documents = await getDocumentsByUserAndId({ id, userId });
 
-  const [document] = documents;
-
-  if (!document) {
+  if (documents.length === 0) {
     return new ChatbotError("not_found:document").toResponse();
-  }
-
-  if (document.userId !== userId) {
-    return new ChatbotError("forbidden:document").toResponse();
   }
 
   return Response.json(documents, { status: 200 });

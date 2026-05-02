@@ -370,6 +370,110 @@ export async function getDocumentsById({ id }: { id: string }) {
   }
 }
 
+export async function getDocumentsByUserAndId({
+  id,
+  userId,
+}: {
+  id: string;
+  userId: string;
+}) {
+  try {
+    return await db
+      .select()
+      .from(document)
+      .where(and(eq(document.id, id), eq(document.userId, userId)))
+      .orderBy(asc(document.createdAt));
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to get documents by id and user"
+    );
+  }
+}
+
+async function _copyArtifactDocuments(
+  sourceMessages: DBMessage[],
+  userId: string
+): Promise<void> {
+  const seen = new Set<string>();
+  for (const msg of sourceMessages) {
+    const parts = msg.parts as Array<Record<string, unknown>>;
+    for (const part of parts) {
+      if (part.type !== "data-artifact") continue;
+      const data = part.data as Record<string, unknown> | null;
+      if (
+        !data ||
+        typeof data.id !== "string" ||
+        typeof data.kind !== "string" ||
+        typeof data.title !== "string" ||
+        typeof data.content !== "string"
+      ) continue;
+      if (seen.has(data.id)) continue;
+      seen.add(data.id);
+      if (data.kind !== "text" && data.kind !== "code" && data.kind !== "sheet") continue;
+      try {
+        await saveDocument({
+          id: data.id,
+          title: data.title,
+          kind: data.kind as ArtifactKind,
+          content: data.content,
+          userId,
+        });
+      } catch {
+        // Ignore — document already copied for this user (idempotent fork).
+      }
+    }
+  }
+}
+
+export async function forkChat({
+  sourceChatId,
+  userId,
+}: {
+  sourceChatId: string;
+  userId: string;
+}): Promise<string> {
+  const sourceChat = await getChatById({ id: sourceChatId });
+  if (!sourceChat) {
+    throw new ChatbotError("not_found:database", "Source chat not found");
+  }
+  if (sourceChat.visibility !== "public") {
+    throw new ChatbotError("forbidden:database", "Can only fork public chats");
+  }
+
+  const sourceMessages = await getMessagesByChatId({ id: sourceChatId });
+  const newChatId = crypto.randomUUID();
+  const now = new Date();
+
+  await db.transaction(async (tx) => {
+    await tx.insert(chat).values({
+      id: newChatId,
+      createdAt: now,
+      userId,
+      title: sourceChat.title,
+      visibility: "private",
+    });
+    if (sourceMessages.length > 0) {
+      await tx.insert(message).values(
+        sourceMessages.map((msg) => ({
+          id: crypto.randomUUID(),
+          chatId: newChatId,
+          role: msg.role,
+          parts: msg.parts,
+          attachments: msg.attachments,
+          createdAt: msg.createdAt,
+        }))
+      );
+    }
+  });
+
+  // Copy artifact Document rows so the new owner can open the side panel.
+  // Content is embedded in each part's `data` field — no extra DB reads needed.
+  await _copyArtifactDocuments(sourceMessages, userId);
+
+  return newChatId;
+}
+
 export async function getDocumentById({ id }: { id: string }) {
   try {
     const [selectedDocument] = await db

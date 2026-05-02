@@ -221,14 +221,16 @@ function PureMultimodalInput({
   const submitForm = useCallback(() => {
     if (isLoaded && !isSignedIn) {
       const pending = input.trim();
-      openSignIn({
-        forceRedirectUrl: pending
-          ? `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/?query=${encodeURIComponent(pending)}`
-          : `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/`,
-        signUpForceRedirectUrl: pending
-          ? `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/?query=${encodeURIComponent(pending)}`
-          : `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/`,
-      });
+      const sourcePath = typeof window !== "undefined" ? window.location.pathname : "";
+      const sourceMatch = sourcePath.match(/\/chat\/([^/?#]+)/);
+      const fromChat = sourceMatch?.[1];
+      const base = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+      const qs = [
+        pending ? `query=${encodeURIComponent(pending)}` : "",
+        fromChat ? `fromChat=${fromChat}` : "",
+      ].filter(Boolean).join("&");
+      const target = qs ? `${base}/?${qs}` : `${base}/`;
+      openSignIn({ forceRedirectUrl: target, signUpForceRedirectUrl: target });
       return;
     }
 

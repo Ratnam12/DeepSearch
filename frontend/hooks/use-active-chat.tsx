@@ -204,9 +204,42 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
     }
   }, [chatData, isNewChat]);
 
+  const hasForkedRef = useRef(false);
+  useEffect(() => {
+    if (!isNewChat || hasForkedRef.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const fromChat = params.get("fromChat");
+    const query = params.get("query");
+    if (!fromChat) return;
+    hasForkedRef.current = true;
+
+    void (async () => {
+      const base = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+      const res = await fetch(`${base}/api/chat/fork`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceChatId: fromChat }),
+      });
+      if (!res.ok) {
+        // Fork failed — fall back to a fresh chat with just the query.
+        const fallback = query ? `${base}/?query=${encodeURIComponent(query)}` : `${base}/`;
+        window.history.replaceState({}, "", fallback);
+        hasAppendedQueryRef.current = false;
+        return;
+      }
+      const { chatId: newChatId } = (await res.json()) as { chatId: string };
+      const qs = query ? `?query=${encodeURIComponent(query)}` : "";
+      // Full reload so useSWR re-fetches /api/messages with initialMessages populated.
+      window.location.replace(`${base}/chat/${newChatId}${qs}`);
+    })();
+  }, [isNewChat]);
+
   const hasAppendedQueryRef = useRef(false);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
+    // Skip auto-send on the landing page when a fork is pending — the fork
+    // effect above will redirect to /chat/<newId>?query=… where this fires.
+    if (params.get("fromChat") && isNewChat) return;
     const query = params.get("query");
     if (query && !hasAppendedQueryRef.current) {
       hasAppendedQueryRef.current = true;
@@ -220,7 +253,7 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
         parts: [{ type: "text", text: query }],
       });
     }
-  }, [sendMessage, chatId]);
+  }, [sendMessage, chatId, isNewChat]);
 
   useAutoResume({
     autoResume: !isNewChat && !!chatData,
