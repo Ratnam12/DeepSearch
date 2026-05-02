@@ -166,6 +166,12 @@ async def _ui_message_stream(
     msg_id = f"msg_{uuid.uuid4().hex}"
     text_id = f"text_{uuid.uuid4().hex}"
     text_started = False
+    artifact_emitted = False
+    text_buffer: list[str] = []
+    # When we auto-promote streamed text into an artifact, we want the
+    # title to reflect what the user actually asked rather than a generic
+    # "Research notes". Pull a summary of the last user message up front.
+    fallback_title = _derive_artifact_title(messages)
 
     yield _ui_part({"type": "start", "messageId": msg_id})
 
@@ -191,6 +197,7 @@ async def _ui_message_stream(
                     "output": event.get("content", ""),
                 })
             elif etype == "artifact":
+                artifact_emitted = True
                 yield _ui_part({
                     "type": "data-artifact",
                     "id": event["artifact_id"],
@@ -205,6 +212,7 @@ async def _ui_message_stream(
                 token = str(event.get("content", ""))
                 if not token:
                     continue
+                text_buffer.append(token)
                 if not text_started:
                     yield _ui_part({"type": "text-start", "id": text_id})
                     text_started = True
@@ -224,8 +232,64 @@ async def _ui_message_stream(
 
     if text_started:
         yield _ui_part({"type": "text-end", "id": text_id})
+
+    # Safety net: if the agent answered substantively but didn't call
+    # create_artifact (sometimes the model just forgets despite the
+    # prompt), promote the streamed answer into a text artifact so the
+    # user always gets the polished side-panel view they expect from
+    # DeepSearch. The threshold is conservative — short factual lookups
+    # ("capital of France?") stay inline-only.
+    if not artifact_emitted:
+        full_text = "".join(text_buffer).strip()
+        if len(full_text.split()) >= 120:
+            artifact_id = str(uuid.uuid4())
+            yield _ui_part({
+                "type": "data-artifact",
+                "id": artifact_id,
+                "data": {
+                    "id": artifact_id,
+                    "kind": "text",
+                    "title": fallback_title,
+                    "content": full_text,
+                },
+            })
+
     yield _ui_part({"type": "finish"})
     yield b"data: [DONE]\n\n"
+
+
+def _derive_artifact_title(messages: list[dict[str, Any]]) -> str:
+    """Best-effort title for an auto-promoted artifact.
+
+    Pulls the most recent user message text and trims it to a short
+    title-like phrase. Falls back to a generic label if no user text is
+    available.
+    """
+    for msg in reversed(messages):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = " ".join(
+                str(part.get("text", ""))
+                for part in content
+                if isinstance(part, dict) and part.get("type") == "text"
+            )
+        else:
+            continue
+        text = text.strip()
+        if not text:
+            continue
+        # Compact whitespace and cap at ~60 chars on a word boundary.
+        text = " ".join(text.split())
+        if len(text) <= 60:
+            return text
+        head = text[:60]
+        last_space = head.rfind(" ")
+        return (head[:last_space] if last_space > 30 else head) + "…"
+    return "Research notes"
 
 
 async def _search_events(question: str) -> AsyncGenerator[dict[str, str], None]:
