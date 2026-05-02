@@ -6,6 +6,7 @@ import { cn, sanitizeText } from "@/lib/utils";
 import { MessageContent, MessageResponse } from "../ai-elements/message";
 import { Shimmer } from "../ai-elements/shimmer";
 import { useDataStream } from "./data-stream-provider";
+import { DeepSearchArtifactCard } from "./deepsearch-artifact-card";
 import { DeepSearchToolGroup } from "./deepsearch-tool-group";
 import type { DeepSearchToolPart } from "./deepsearch-tool-step";
 import { DocumentPreview } from "./document-preview";
@@ -164,8 +165,17 @@ const PurePreviewMessage = ({
   // whether any text part appears later in the message — once the answer
   // starts streaming, the steps fold up to a one-line summary so the
   // answer is the focal point.
-  const rawParts = message.parts ?? [];
-  const citations = collectCitations(rawParts);
+  //
+  // We pre-filter `data-citations` (consumed only as the [N]→URL map for
+  // linkifyCitations) and `data-artifact` (rendered once at the end of
+  // the message) so they don't break consecutive-tool runs into many
+  // small groups.
+  const allParts = message.parts ?? [];
+  const citations = collectCitations(allParts);
+  const artifactParts = allParts.filter((p) => p.type === "data-artifact");
+  const rawParts = allParts.filter(
+    (p) => p.type !== "data-citations" && p.type !== "data-artifact"
+  );
   type RenderItem =
     | { kind: "single"; part: ChatMessage["parts"][number]; index: number }
     | {
@@ -309,6 +319,45 @@ const PurePreviewMessage = ({
     return null;
   });
 
+  // Inline artifact cards rendered once at the end of the assistant
+  // message — clicking opens the side panel, the only entry point after
+  // a reload (data-stream-handler doesn't run on persisted parts).
+  const artifactCards = artifactParts
+    .map((part, idx) => {
+      const dataPart = part as {
+        data?: {
+          id?: string;
+          kind?: "text" | "code" | "sheet";
+          title?: string;
+          content?: string;
+        };
+      };
+      const artifact = dataPart.data;
+      if (
+        !artifact ||
+        typeof artifact.id !== "string" ||
+        typeof artifact.title !== "string" ||
+        typeof artifact.content !== "string" ||
+        (artifact.kind !== "text" &&
+          artifact.kind !== "code" &&
+          artifact.kind !== "sheet")
+      ) {
+        return null;
+      }
+      return (
+        <DeepSearchArtifactCard
+          artifact={{
+            id: artifact.id,
+            kind: artifact.kind,
+            title: artifact.title,
+            content: artifact.content,
+          }}
+          key={`artifact-${artifact.id}-${idx}`}
+        />
+      );
+    })
+    .filter(Boolean);
+
   const actions = !isReadonly && (
     <MessageActions
       chatId={chatId}
@@ -330,6 +379,7 @@ const PurePreviewMessage = ({
     <>
       {attachments}
       {parts}
+      {artifactCards}
       {actions}
     </>
   );
