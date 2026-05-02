@@ -438,12 +438,18 @@ def _latest_user_text(messages: list[dict[str, Any]]) -> str:
 
 async def run_chat(
     messages: list[dict[str, Any]],
+    model: str | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Multi-turn entry point: run the agent loop over a full messages array.
 
     Messages must already be in OpenAI chat-completion format. The Next.js
     proxy is responsible for translating AI SDK UIMessages into this format
     via ``convertToModelMessages`` before forwarding.
+
+    ``model`` overrides the complexity-based router with a specific
+    OpenRouter model id (e.g. ``openai/gpt-5.5``,
+    ``google/gemini-3.1-pro``). When omitted or empty, falls back to the
+    default routing.
 
     Yields the same event dicts as :func:`run_agent`. Routing (complexity,
     model selection) keys off the latest user message's text content.
@@ -457,9 +463,18 @@ async def run_chat(
         *messages,
     ]
     score = complexity_score(question_text) if question_text else 1
-    model = route_model(question_text) if question_text else FLASH
+    if model:
+        chosen_model = model
+        # When the user explicitly picks a model, treat the request as
+        # complex enough to engage the multi-candidate synthesis path
+        # (the user is opting into the more expensive model on purpose).
+        if score == 1 and ":" in model:  # heuristic: branded model id
+            score = 1  # leave routing alone — only the *which* model
+                       # changes, not the strategy
+    else:
+        chosen_model = route_model(question_text) if question_text else FLASH
 
-    async for event in _agent_loop(history, score, model, question_text):
+    async for event in _agent_loop(history, score, chosen_model, question_text):
         yield event
 
 

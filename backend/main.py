@@ -65,10 +65,16 @@ class ChatRequest(BaseModel):
     ``messages`` is already in OpenAI chat-completion format — the Next.js
     proxy is responsible for converting AI SDK UIMessages into this shape via
     ``convertToModelMessages`` before forwarding here.
+
+    ``model`` is the OpenRouter model id picked by the user from the chat
+    dropdown (e.g. ``openai/gpt-5.5``, ``google/gemini-3.1-pro``). When
+    omitted or unknown, the agent falls back to its complexity-based router
+    (``flash_model`` for simple queries, ``pro_model`` for complex).
     """
 
     id: str
     messages: list[dict[str, Any]]
+    model: str | None = None
 
 
 @asynccontextmanager
@@ -140,6 +146,7 @@ def _ui_part(obj: dict[str, Any]) -> bytes:
 
 async def _ui_message_stream(
     messages: list[dict[str, Any]],
+    model: str | None = None,
 ) -> AsyncGenerator[bytes, None]:
     """Translate ``run_chat`` events into AI SDK UI Message Stream Protocol.
 
@@ -163,7 +170,7 @@ async def _ui_message_stream(
     yield _ui_part({"type": "start", "messageId": msg_id})
 
     try:
-        async for event in run_chat(messages):
+        async for event in run_chat(messages, model=model):
             etype = event.get("type")
             if etype == "tool_call":
                 args_raw = event.get("args") or "{}"
@@ -322,7 +329,7 @@ def build_app() -> FastAPI:
         directly to the ``useChat`` hook.
         """
         return StreamingResponse(
-            _ui_message_stream(request.messages),
+            _ui_message_stream(request.messages, model=request.model),
             media_type="text/event-stream",
             headers={
                 "x-vercel-ai-ui-message-stream": "v1",
