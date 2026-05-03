@@ -55,6 +55,16 @@ export type CustomUIDataTypes = {
     url: string;
     score?: number;
   }>;
+  // DeepSearch research-run reference: emitted by /api/chat when the
+  // user submits with the DeepSearch toggle on. The chat-side renderer
+  // turns this into a live artifact card that subscribes to the run's
+  // SSE event stream and shows progress inline. Once the run is done,
+  // the same card renders the final report. Persists in the message
+  // history so a reload re-attaches the live state by runId.
+  research: {
+    runId: string;
+    query: string;
+  };
 };
 
 export type ChatMessage = UIMessage<

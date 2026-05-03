@@ -49,6 +49,13 @@ export const postRequestBodySchema = z.object({
   messages: z.array(toolApprovalMessageSchema).optional(),
   selectedChatModel: z.string(),
   selectedVisibilityType: z.enum(["public", "private"]),
+  // When the user submits with the DeepSearch toggle on we fork the
+  // request into a research-run flow: /api/chat creates the run row
+  // synchronously, emits a single ``data-research`` part with the
+  // runId, persists the assistant message, and returns. The actual
+  // research happens in the background worker; the chat artifact
+  // card subscribes to the run's SSE stream from the client.
+  deepSearch: z.boolean().optional(),
 });
 
 export type PostRequestBody = z.infer<typeof postRequestBodySchema>;

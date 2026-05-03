@@ -16,6 +16,7 @@ import {
   saveMessages,
   updateChatTitleById,
 } from "@/lib/db/queries";
+import { createResearchRun } from "@/lib/db/queries-research";
 import type { DBMessage } from "@/lib/db/schema";
 import { ChatbotError } from "@/lib/errors";
 import { checkIpRateLimit } from "@/lib/ratelimit";
@@ -107,6 +108,52 @@ async function inlineFilePart(
   } as ChatMessage["parts"][number];
 }
 
+function textFromUserMessage(message: ChatMessage): string | null {
+  if (!message.parts) return null;
+  for (const part of message.parts) {
+    if (part.type === "text" && typeof part.text === "string") {
+      const trimmed = part.text.trim();
+      if (trimmed.length > 0) return trimmed;
+    }
+  }
+  return null;
+}
+
+function buildResearchUiStream({
+  assistantMessageId,
+  partId,
+  runId,
+  query,
+}: {
+  assistantMessageId: string;
+  partId: string;
+  runId: string;
+  query: string;
+}): ReadableStream<Uint8Array> {
+  // Mirror the AI SDK UI Message Stream Protocol shape so the
+  // existing useChat() hook treats this exactly like any other
+  // assistant response. Three parts: start (with the assistant
+  // message id), one ``data-research`` part carrying { runId, query },
+  // finish, then the [DONE] terminator.
+  const encoder = new TextEncoder();
+  const lines = [
+    `data: ${JSON.stringify({ type: "start", messageId: assistantMessageId })}\n\n`,
+    `data: ${JSON.stringify({
+      type: "data-research",
+      id: partId,
+      data: { runId, query },
+    })}\n\n`,
+    `data: ${JSON.stringify({ type: "finish" })}\n\n`,
+    "data: [DONE]\n\n",
+  ];
+  return new ReadableStream({
+    start(controller) {
+      for (const line of lines) controller.enqueue(encoder.encode(line));
+      controller.close();
+    },
+  });
+}
+
 async function inlineMessageAttachments(
   messages: ChatMessage[]
 ): Promise<ChatMessage[]> {
@@ -135,8 +182,14 @@ export async function POST(request: Request) {
     return new ChatbotError("bad_request:api").toResponse();
   }
 
-  const { id, message, messages, selectedChatModel, selectedVisibilityType } =
-    requestBody;
+  const {
+    id,
+    message,
+    messages,
+    selectedChatModel,
+    selectedVisibilityType,
+    deepSearch,
+  } = requestBody;
 
   const { userId } = await auth();
   if (!userId) {
@@ -190,6 +243,71 @@ export async function POST(request: Request) {
         },
       ],
     });
+  }
+
+  // ── DeepSearch branch ──────────────────────────────────────────────────
+  // When the toggle is on we don't run the chat agent at all. We
+  // create a research run, persist an assistant message that holds a
+  // single ``data-research`` part (the runId + query), and stream
+  // back the same part so the open chat session renders the artifact
+  // card without a reload. The run itself is processed by the
+  // backend research worker (now hosted inside FastAPI's lifespan)
+  // and the card subscribes to its SSE event stream client-side.
+  if (deepSearch && message?.role === "user" && !isToolApprovalFlow) {
+    const text = textFromUserMessage(message as ChatMessage);
+    if (!text) {
+      return new ChatbotError(
+        "bad_request:api",
+        "DeepSearch needs a text query to start a run"
+      ).toResponse();
+    }
+    const run = await createResearchRun({ userId, query: text });
+    const assistantMessageId = generateUUID();
+    const partId = `research-${run.id}`;
+    const assistantParts = [
+      {
+        type: "data-research",
+        id: partId,
+        data: { runId: run.id, query: text },
+      },
+    ];
+    await saveMessages({
+      messages: [
+        {
+          id: assistantMessageId,
+          chatId: id,
+          role: "assistant",
+          parts: assistantParts as DBMessage["parts"],
+          attachments: [],
+          createdAt: new Date(),
+        },
+      ],
+    });
+    if (titleToBroadcast) {
+      try {
+        await updateChatTitleById({ chatId: id, title: titleToBroadcast });
+      } catch (err) {
+        console.error("Failed to update chat title", { chatId: id, err });
+      }
+    }
+
+    return new Response(
+      buildResearchUiStream({
+        assistantMessageId,
+        partId,
+        runId: run.id,
+        query: text,
+      }),
+      {
+        headers: {
+          "content-type": "text/event-stream",
+          "x-vercel-ai-ui-message-stream": "v1",
+          "cache-control": "no-cache, no-transform",
+          "x-accel-buffering": "no",
+          connection: "keep-alive",
+        },
+      }
+    );
   }
 
   // ── Translate to OpenAI-format messages and forward ────────────────────
@@ -468,6 +586,30 @@ async function persistFromStream({
                     ? (part as { id: string }).id
                     : `cite-${assistantParts.length}`,
                 data: part.data,
+              });
+            }
+            break;
+          }
+          case "data-research": {
+            // DeepSearch run reference — the only state worth
+            // persisting is the runId + query. The artifact card
+            // re-fetches everything else from /api/research/[id]
+            // on render, so the persisted part is just a pointer.
+            const data = part.data as
+              | { runId?: string; query?: string }
+              | undefined;
+            if (
+              data &&
+              typeof data.runId === "string" &&
+              typeof data.query === "string"
+            ) {
+              assistantParts.push({
+                type: "data-research",
+                id:
+                  typeof (part as { id?: string }).id === "string"
+                    ? (part as { id: string }).id
+                    : `research-${data.runId}`,
+                data: { runId: data.runId, query: data.query },
               });
             }
             break;

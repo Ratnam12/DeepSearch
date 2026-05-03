@@ -4,8 +4,10 @@ Mounts the API router and configures middleware.
 Single responsibility: wire up the ASGI app.
 """
 
+import asyncio
 import json
 import logging
+import os
 import re
 import uuid
 from collections.abc import Awaitable, Callable
@@ -24,6 +26,8 @@ from pydantic import BaseModel
 from backend.agent import normalise_messages_for_openrouter, run_chat
 from backend.cache import cache_lookup, cache_store
 from backend.config import get_settings
+from backend.research.db import close_pool as close_research_pool
+from backend.research.worker import main_loop as research_worker_main_loop
 from backend.router import api_router
 
 
@@ -80,12 +84,64 @@ class ChatRequest(BaseModel):
     user_id: str | None = None
 
 
+def _inline_worker_disabled() -> bool:
+    """Production deployments run a single Railway service that hosts
+    both the HTTP server and the research worker — the worker runs as
+    an asyncio task spawned in the lifespan below. Set
+    ``DISABLE_INLINE_WORKER=true`` to opt out (e.g. when running a
+    dedicated worker process on a separate service so you don't get
+    duplicate claim contention)."""
+    return os.environ.get("DISABLE_INLINE_WORKER", "").lower() in {"1", "true", "yes"}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Run startup/shutdown logic around the app lifetime."""
-    # Future: initialise Qdrant collection, warm Redis pool, etc.
-    yield
-    # Future: flush caches, close connections.
+    """Run startup/shutdown logic around the app lifetime.
+
+    Spawns the research worker (``backend.research.worker.main_loop``)
+    as a background asyncio task by default so research runs get
+    picked up without needing a separate Railway service. The task
+    is co-operatively cancelled on shutdown via a stop-event so the
+    current run drains cleanly before SIGTERM expires.
+    """
+    stop_event: asyncio.Event | None = None
+    worker_task: asyncio.Task[None] | None = None
+
+    if _inline_worker_disabled():
+        logger.info("research worker: inline mode disabled via env")
+    else:
+        stop_event = asyncio.Event()
+        worker_task = asyncio.create_task(
+            research_worker_main_loop(stop_event),
+            name="research-worker",
+        )
+        logger.info("research worker: started in lifespan")
+
+    try:
+        yield
+    finally:
+        if stop_event is not None and worker_task is not None:
+            logger.info("research worker: shutting down")
+            stop_event.set()
+            try:
+                # Bounded wait so a hung worker can't hold up
+                # container shutdown indefinitely. Railway sends
+                # SIGKILL after ~30s; we want to drain well within
+                # that.
+                await asyncio.wait_for(worker_task, timeout=15)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "research worker: didn't drain in 15s; cancelling"
+                )
+                worker_task.cancel()
+                try:
+                    await worker_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            try:
+                await close_research_pool()
+            except Exception:
+                logger.exception("research worker: failed to close DB pool")
 
 
 def _error_message(exc: Exception) -> str:

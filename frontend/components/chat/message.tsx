@@ -3,6 +3,7 @@ import type { UseChatHelpers } from "@ai-sdk/react";
 import type { Vote } from "@/lib/db/schema";
 import type { ChatMessage } from "@/lib/types";
 import { cn, sanitizeText } from "@/lib/utils";
+import { ResearchArtifactCard } from "@/components/research/research-artifact-card";
 import { MessageContent, MessageResponse } from "../ai-elements/message";
 import { Shimmer } from "../ai-elements/shimmer";
 import { useDataStream } from "./data-stream-provider";
@@ -190,8 +191,18 @@ const PurePreviewMessage = ({
   const allParts = message.parts ?? [];
   const citations = collectCitations(allParts);
   const artifactParts = allParts.filter((p) => p.type === "data-artifact");
+  // Inline DeepSearch research-run cards. The card renders the live
+  // progress (and final report) for a research run referenced by
+  // runId — handled separately from the regular parts mapper because
+  // it has its own data-fetch + SSE lifecycle.
+  const researchParts = allParts.filter(
+    (p) => p.type === "data-research"
+  );
   const rawParts = allParts.filter(
-    (p) => p.type !== "data-citations" && p.type !== "data-artifact"
+    (p) =>
+      p.type !== "data-citations" &&
+      p.type !== "data-artifact" &&
+      p.type !== "data-research"
   );
   type RenderItem =
     | { kind: "single"; part: ChatMessage["parts"][number]; index: number }
@@ -338,6 +349,33 @@ const PurePreviewMessage = ({
     return null;
   });
 
+  // Inline research artifact cards. Each ``data-research`` part
+  // becomes a self-contained card that fetches its own state by
+  // runId, subscribes to SSE for live progress, and renders the
+  // final report inline once the run completes.
+  const researchCards = researchParts
+    .map((part, idx) => {
+      const dataPart = part as {
+        data?: { runId?: string; query?: string };
+      };
+      const data = dataPart.data;
+      if (
+        !data ||
+        typeof data.runId !== "string" ||
+        typeof data.query !== "string"
+      ) {
+        return null;
+      }
+      return (
+        <ResearchArtifactCard
+          key={`research-${data.runId}-${idx}`}
+          query={data.query}
+          runId={data.runId}
+        />
+      );
+    })
+    .filter(Boolean);
+
   // Inline artifact cards rendered once at the end of the assistant
   // message — clicking opens the side panel, the only entry point after
   // a reload (data-stream-handler doesn't run on persisted parts).
@@ -397,6 +435,7 @@ const PurePreviewMessage = ({
   ) : (
     <>
       {attachments}
+      {researchCards}
       {parts}
       {artifactCards}
       {actions}

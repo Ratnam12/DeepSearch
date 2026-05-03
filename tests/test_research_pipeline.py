@@ -331,10 +331,20 @@ async def test_direct_pipeline_drives_a_run_inline() -> None:
     await _wipe_test_rows()
     run_id = await _create_run("integration-test direct")
 
-    # Manually claim (the worker normally does this).
-    claimed = await claim_queued_run()
+    # Skip ``claim_queued_run`` so the test doesn't get tripped up
+    # when there's an unrelated queued row in the production DB
+    # (e.g. left over from a stuck deploy). Move the test's own row
+    # to 'scoping' directly and feed it to run_pipeline. The
+    # subprocess tests still exercise the claim path end-to-end.
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            'UPDATE "ResearchRun" SET "status" = \'scoping\', "startedAt" = now() WHERE "id" = $1::uuid',
+            run_id,
+        )
+    claimed = await get_run(run_id)
     assert claimed is not None
-    assert str(claimed["id"]) == run_id, "claimed wrong run; another test in-flight?"
+    await append_event(run_id, "run_started", {"query": claimed["query"]})
 
     await run_pipeline(claimed)
 

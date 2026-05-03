@@ -177,7 +177,6 @@ function PureMultimodalInput({
     "deepSearchEnabled",
     false
   );
-  const [creatingResearchRun, setCreatingResearchRun] = useState(false);
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -281,53 +280,6 @@ function PureMultimodalInput({
   const [isDragging, setIsDragging] = useState(false);
   const dragCounter = useRef(0);
 
-  const submitDeepResearch = useCallback(
-    async (queryText: string) => {
-      // Single source of truth for the deep-research submit path.
-      // POST /api/research returns the new runId; we navigate to the
-      // run's page so the (research) layout takes over and the live
-      // event stream starts immediately.
-      setCreatingResearchRun(true);
-      try {
-        const base = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
-        const res = await fetch(`${base}/api/research`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: queryText }),
-        });
-        if (!res.ok) {
-          const body = await res.text().catch(() => "");
-          toast.error(
-            body ||
-              "Couldn't start the research run. Please try again in a moment."
-          );
-          return false;
-        }
-        const data = (await res.json()) as { id?: string };
-        if (!data?.id) {
-          toast.error("Research run created but no id was returned.");
-          return false;
-        }
-        // Clear input + attachments first, mirror the chat path.
-        setAttachments([]);
-        setLocalStorageInput("");
-        setInput("");
-        router.push(`${base}/research/${data.id}`);
-        return true;
-      } catch (err) {
-        toast.error(
-          err instanceof Error
-            ? err.message
-            : "Network error starting research run"
-        );
-        return false;
-      } finally {
-        setCreatingResearchRun(false);
-      }
-    },
-    [router, setAttachments, setInput, setLocalStorageInput]
-  );
-
   const submitForm = useCallback(() => {
     if (isLoaded && !isSignedIn) {
       const pending = input.trim();
@@ -350,9 +302,16 @@ function PureMultimodalInput({
     const text = input.trim();
 
     // ── DeepSearch toggle path ──────────────────────────────────────
-    // Branches before the chat-message path — when DeepSearch is on,
-    // we never call sendMessage; we hand the query off to the
-    // research worker and navigate to the run's page.
+    // The chat thread stays the home for research — no separate page.
+    // We send through the same useChat() pipeline as a regular
+    // message but with ``deepSearch: true`` in the request body. The
+    // /api/chat route forks on that flag: it creates the research run
+    // synchronously, persists an assistant message with a single
+    // ``data-research`` part (runId + query), and streams that part
+    // back. The chat then renders an inline ResearchArtifactCard
+    // that subscribes to live progress and shows the final report
+    // once research is complete. Follow-up questions in the same
+    // thread are just regular chat messages.
     if (deepSearchEnabled) {
       if (!text) {
         return;
@@ -363,7 +322,21 @@ function PureMultimodalInput({
           { duration: 4000 }
         );
       }
-      void submitDeepResearch(text);
+      window.history.pushState(
+        {},
+        "",
+        `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/chat/${chatId}`
+      );
+      sendMessage(
+        { role: "user", parts: [{ type: "text", text }] },
+        { body: { deepSearch: true } }
+      );
+      setAttachments([]);
+      setLocalStorageInput("");
+      setInput("");
+      if (width && width > 768) {
+        textareaRef.current?.focus();
+      }
       return;
     }
 
@@ -426,7 +399,6 @@ function PureMultimodalInput({
     selectedModelId,
     selectedModelHasVision,
     deepSearchEnabled,
-    submitDeepResearch,
   ]);
 
   const uploadFile = useCallback(async (file: File) => {
@@ -786,7 +758,6 @@ function PureMultimodalInput({
                 selectedModelId={selectedModelId}
               />
               <DeepSearchToggle
-                disabled={creatingResearchRun}
                 enabled={deepSearchEnabled}
                 onToggle={() => setDeepSearchEnabled(!deepSearchEnabled)}
               />
@@ -798,14 +769,13 @@ function PureMultimodalInput({
               <PromptInputSubmit
                 className={cn(
                   "h-7 w-7 rounded-xl transition-all duration-200",
-                  canSubmit && !creatingResearchRun
+                  canSubmit
                     ? "bg-foreground text-background hover:opacity-85 active:scale-95"
                     : "bg-muted text-muted-foreground/25 cursor-not-allowed"
                 )}
                 data-testid="send-button"
                 disabled={
                   !canSubmit ||
-                  creatingResearchRun ||
                   uploadQueue.length > 0 ||
                   (status !== "ready" && status !== "error")
                 }
