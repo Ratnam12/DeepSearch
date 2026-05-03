@@ -39,6 +39,40 @@ const STATUS_LABELS: Record<string, string> = {
   cancelled: "Cancelled",
 };
 
+// In-memory shape for live sub-agent state — derived from `subagent_*`
+// SSE events plus the initial DB snapshot. Kept separate from the
+// Drizzle row type so we can hydrate it from the event payload before
+// the DB row has been re-fetched.
+type SubagentLive = {
+  id: string;
+  subQuestion: string;
+  status: "running" | "done" | "failed";
+  findingMd: string | null;
+  sourceCount: number | null;
+  latestAction: string | null;
+  latestActionDetail: string | null;
+  model: string | null;
+  stub: boolean;
+};
+
+function subagentFromInitial(row: ResearchSubagent): SubagentLive {
+  const rawStatus = row.status;
+  const status: SubagentLive["status"] =
+    rawStatus === "done" || rawStatus === "failed" ? rawStatus : "running";
+  const sources = Array.isArray(row.sources) ? (row.sources as unknown[]) : [];
+  return {
+    id: row.id,
+    subQuestion: row.subQuestion,
+    status,
+    findingMd: row.findingMd,
+    sourceCount: sources.length || null,
+    latestAction: null,
+    latestActionDetail: null,
+    model: row.model,
+    stub: false,
+  };
+}
+
 export function ResearchRunView({
   initialRun,
   initialPlan,
@@ -54,6 +88,11 @@ export function ResearchRunView({
   const [plan, setPlan] = useState<ResearchPlan | null>(initialPlan);
   const [report, setReport] = useState<ResearchReport | null>(initialReport);
   const [events, setEvents] = useState<StreamEvent[]>([]);
+  const [subagents, setSubagents] = useState<Record<string, SubagentLive>>(
+    () => Object.fromEntries(
+      initialSubagents.map((sa) => [sa.id, subagentFromInitial(sa)])
+    )
+  );
   const [approving, setApproving] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [streamReady, setStreamReady] = useState(false);
@@ -112,6 +151,98 @@ export function ResearchRunView({
             .catch(() => undefined);
           break;
         }
+        case "subagent_started": {
+          // Hydrate from the event payload so the card appears
+          // instantly — no need to wait for a DB round-trip.
+          const id = evt.payload.id;
+          const sub = evt.payload.subQuestion;
+          const model = evt.payload.model;
+          if (typeof id !== "string" || typeof sub !== "string") break;
+          setSubagents((prev) => ({
+            ...prev,
+            [id]: {
+              id,
+              subQuestion: sub,
+              status: "running",
+              findingMd: null,
+              sourceCount: null,
+              latestAction: null,
+              latestActionDetail: null,
+              model: typeof model === "string" ? model : null,
+              stub: Boolean(evt.payload.stub),
+            },
+          }));
+          break;
+        }
+        case "subagent_progress": {
+          const id = evt.payload.id;
+          const action = evt.payload.action;
+          const detail = evt.payload.detail;
+          if (typeof id !== "string") break;
+          setSubagents((prev) => {
+            const cur = prev[id];
+            if (!cur) return prev;
+            return {
+              ...prev,
+              [id]: {
+                ...cur,
+                latestAction: typeof action === "string" ? action : cur.latestAction,
+                latestActionDetail:
+                  typeof detail === "string" ? detail : cur.latestActionDetail,
+              },
+            };
+          });
+          break;
+        }
+        case "subagent_finished": {
+          const id = evt.payload.id;
+          const finding = evt.payload.findingMd;
+          const sourceCount = evt.payload.sourceCount;
+          if (typeof id !== "string") break;
+          setSubagents((prev) => ({
+            ...prev,
+            [id]: {
+              ...(prev[id] ?? {
+                id,
+                subQuestion: "",
+                model: null,
+                stub: false,
+              }),
+              id,
+              subQuestion: prev[id]?.subQuestion ?? "",
+              status: "done",
+              findingMd: typeof finding === "string" ? finding : null,
+              sourceCount:
+                typeof sourceCount === "number" ? sourceCount : null,
+              latestAction: null,
+              latestActionDetail: null,
+              model: prev[id]?.model ?? null,
+              stub: prev[id]?.stub ?? false,
+            },
+          }));
+          break;
+        }
+        case "subagent_failed": {
+          const id = evt.payload.id;
+          const error = evt.payload.error;
+          if (typeof id !== "string") break;
+          setSubagents((prev) => {
+            const cur = prev[id];
+            if (!cur) return prev;
+            return {
+              ...prev,
+              [id]: {
+                ...cur,
+                status: "failed",
+                findingMd:
+                  typeof error === "string"
+                    ? `_Sub-agent failed: ${error}_`
+                    : cur.findingMd,
+              },
+            };
+          });
+          break;
+        }
         case "report_written":
         case "run_completed": {
           fetch(`/api/research/${run.id}`, { cache: "no-store" })
@@ -119,6 +250,16 @@ export function ResearchRunView({
             .then((snap) => {
               if (snap.run) setRun(snap.run);
               if (snap.report) setReport(snap.report);
+              if (Array.isArray(snap.subagents)) {
+                setSubagents(
+                  Object.fromEntries(
+                    (snap.subagents as ResearchSubagent[]).map((sa) => [
+                      sa.id,
+                      subagentFromInitial(sa),
+                    ])
+                  )
+                );
+              }
             })
             .catch(() => undefined);
           break;
@@ -136,12 +277,17 @@ export function ResearchRunView({
       "status",
       "status_changed",
       "run_started",
+      "scoping_started",
       "brief_drafted",
       "plan_proposed",
       "plan_approved",
       "research_started",
+      "research_dispatch",
       "subagent_started",
+      "subagent_progress",
       "subagent_finished",
+      "subagent_failed",
+      "research_complete",
       "report_written",
       "run_completed",
       "run_failed",
@@ -225,6 +371,23 @@ export function ResearchRunView({
     return [];
   }, [plan?.outline]);
 
+  // Order sub-agents by their plan position so the UI is stable as
+  // events arrive — sub-agents that complete first don't jump to the
+  // top of the list. Falls back to insertion order for ad-hoc ids.
+  const subagentList = useMemo<SubagentLive[]>(() => {
+    const planOrder = new Map<string, number>(
+      subQuestions.map((q, i) => [q.id, i])
+    );
+    return Object.values(subagents).sort((a, b) => {
+      const ai = planOrder.get(a.id);
+      const bi = planOrder.get(b.id);
+      if (ai !== undefined && bi !== undefined) return ai - bi;
+      if (ai !== undefined) return -1;
+      if (bi !== undefined) return 1;
+      return a.id.localeCompare(b.id);
+    });
+  }, [subagents, subQuestions]);
+
   return (
     <div className="grid h-dvh grid-rows-[auto_1fr] overflow-hidden">
       <header className="border-b border-border bg-background px-6 py-4">
@@ -267,10 +430,15 @@ export function ResearchRunView({
               />
             )}
 
+            <SubagentList
+              status={run.status}
+              subagents={subagentList}
+            />
+
             {report ? (
               <ReportPanel report={report} />
             ) : (
-              <ReportPlaceholder run={run} />
+              <ReportPlaceholder run={run} subagentCount={subagentList.length} />
             )}
           </div>
         </main>
@@ -625,15 +793,165 @@ function ReportPanel({ report }: { report: ResearchReport }) {
   );
 }
 
-function ReportPlaceholder({ run }: { run: ResearchRun }) {
+function ReportPlaceholder({
+  run,
+  subagentCount,
+}: {
+  run: ResearchRun;
+  subagentCount: number;
+}) {
+  if (subagentCount > 0 && run.status !== "done") {
+    return null;
+  }
   return (
-    <div className="rounded-lg border border-border border-dashed p-8 text-center">
+    <div className="mt-6 rounded-lg border border-border border-dashed p-8 text-center">
       <p className="font-medium text-sm">Report will appear here</p>
       <p className="mt-1 text-muted-foreground text-xs">
         Status: {STATUS_LABELS[run.status] ?? run.status}. The report is
         written once research is complete.
       </p>
     </div>
+  );
+}
+
+function SubagentList({
+  status,
+  subagents,
+}: {
+  status: ResearchRun["status"];
+  subagents: SubagentLive[];
+}) {
+  // Don't show during early phases — the plan card owns that screen,
+  // and the empty list would be visual noise.
+  if (status === "queued" || status === "scoping" || status === "planning") {
+    return null;
+  }
+  if (subagents.length === 0) {
+    if (status === "researching" || status === "writing") {
+      return (
+        <div className="mt-6 rounded-lg border border-border border-dashed p-6 text-center text-muted-foreground text-xs">
+          Waiting for sub-agents to start…
+        </div>
+      );
+    }
+    return null;
+  }
+  const completed = subagents.filter((s) => s.status === "done").length;
+  return (
+    <section className="mt-6 space-y-3">
+      <div className="flex items-baseline justify-between">
+        <h2 className="font-semibold text-sm">
+          Sub-agents{" "}
+          <span className="font-normal text-muted-foreground">
+            · {completed}/{subagents.length} complete
+          </span>
+        </h2>
+      </div>
+      <ul className="space-y-3">
+        {subagents.map((sa) => (
+          <li key={sa.id}>
+            <SubagentCard subagent={sa} />
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+const ACTION_LABELS: Record<string, string> = {
+  search: "Searching the web",
+  scrape: "Reading source",
+  retrieve: "Pulling context",
+  error: "Error",
+};
+
+function SubagentCard({ subagent }: { subagent: SubagentLive }) {
+  const [open, setOpen] = useState(false);
+  const isRunning = subagent.status === "running";
+  const isFailed = subagent.status === "failed";
+  return (
+    <div className="rounded-lg border border-border bg-card p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            {isRunning && (
+              <Loader2Icon className="size-3.5 shrink-0 animate-spin text-primary" />
+            )}
+            <p className="line-clamp-2 font-medium text-sm leading-snug">
+              {subagent.subQuestion}
+            </p>
+          </div>
+          {(subagent.model || subagent.stub) && (
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              {subagent.stub
+                ? "stub sub-agent (LLM disabled)"
+                : (subagent.model ?? "")}
+            </p>
+          )}
+        </div>
+        <SubagentBadge
+          isFailed={isFailed}
+          isRunning={isRunning}
+          sourceCount={subagent.sourceCount}
+        />
+      </div>
+
+      {isRunning && subagent.latestAction && (
+        <p className="mt-3 line-clamp-2 text-muted-foreground text-xs">
+          <span className="font-medium text-foreground/80">
+            {ACTION_LABELS[subagent.latestAction] ?? subagent.latestAction}
+          </span>
+          {subagent.latestActionDetail ? `: ${subagent.latestActionDetail}` : ""}
+        </p>
+      )}
+
+      {subagent.findingMd && (
+        <div className="mt-3">
+          <button
+            className="text-muted-foreground text-xs underline-offset-2 hover:text-foreground hover:underline"
+            onClick={() => setOpen((v) => !v)}
+            type="button"
+          >
+            {open ? "Hide finding" : "Show finding"}
+          </button>
+          {open && (
+            <pre className="mt-2 whitespace-pre-wrap rounded-md border border-border/70 bg-muted/30 p-3 font-sans text-xs leading-relaxed">
+              {subagent.findingMd}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SubagentBadge({
+  isRunning,
+  isFailed,
+  sourceCount,
+}: {
+  isRunning: boolean;
+  isFailed: boolean;
+  sourceCount: number | null;
+}) {
+  if (isFailed) {
+    return (
+      <span className="shrink-0 rounded-full bg-destructive/10 px-2 py-0.5 font-medium text-[11px] text-destructive">
+        failed
+      </span>
+    );
+  }
+  if (isRunning) {
+    return (
+      <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 font-medium text-[11px] text-primary">
+        running
+      </span>
+    );
+  }
+  return (
+    <span className="shrink-0 rounded-full bg-emerald-500/10 px-2 py-0.5 font-medium text-[11px] text-emerald-700 dark:text-emerald-400">
+      done{sourceCount ? ` · ${sourceCount} source${sourceCount === 1 ? "" : "s"}` : ""}
+    </span>
   );
 }
 

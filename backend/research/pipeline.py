@@ -25,6 +25,7 @@ from backend.research.state import (
     is_cancelled,
     transition_status,
 )
+from backend.research.supervisor import run_research
 from backend.research.db import get_pool
 
 logger = logging.getLogger("deepsearch.research.pipeline")
@@ -233,41 +234,17 @@ async def _auto_approve_plan(run_id: str) -> None:
 
 
 async def _run_researching(run: dict[str, Any]) -> None:
-    """Phase 4: researching. Stub — pretends two sub-agents finished."""
-    run_id = run["id"]
-    pool = await get_pool()
+    """Phase 4: researching.
 
-    # Stub sub-agent rows + per-agent events.
-    for idx in (1, 2):
-        await _check_cancelled(run_id)
-        sub_id = f"sa{idx}"
-        async with pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO "ResearchSubagent"
-                    ("runId", "id", "subQuestion", "status", "model",
-                     "startedAt", "finishedAt", "findingMd", "sources")
-                VALUES ($1::uuid, $2, $3, 'done', $4, now(), now(), $5, $6::json)
-                ON CONFLICT ("runId", "id") DO NOTHING
-                """,
-                run_id,
-                sub_id,
-                f"Stub sub-question #{idx} for: {run['query']}",
-                "stub-model",
-                f"Stub finding for sub-agent {idx}.",
-                json.dumps([]),
-            )
-        await append_event(
-            run_id,
-            "subagent_started",
-            {"id": sub_id, "subQuestion": f"Stub sub-question #{idx}"},
-        )
-        await asyncio.sleep(_phase_delay() / 2)
-        await append_event(
-            run_id,
-            "subagent_finished",
-            {"id": sub_id, "findingMd": f"Stub finding for sub-agent {idx}."},
-        )
+    Hands off to the supervisor (:func:`run_research`), which spawns
+    one sub-agent per approved sub-question in parallel. The supervisor
+    persists each sub-agent's row to ``ResearchSubagent`` and emits
+    per-sub-agent progress events; this wrapper is just a phase
+    bookmark.
+    """
+    run_id = run["id"]
+    await _check_cancelled(run_id)
+    await run_research(run)
 
 
 async def _run_writing(run: dict[str, Any]) -> None:

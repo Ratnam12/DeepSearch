@@ -251,6 +251,13 @@ const RESEARCH_NOTIFY_CHANNEL = "research_events";
 // so concurrent writes can't collide on the (runId, seq) primary key.
 // Uses COALESCE so the very first event for a run starts at seq=1.
 //
+// A per-run Postgres advisory lock (``pg_advisory_xact_lock``)
+// serialises concurrent appends for the same run — required because
+// phase-3 sub-agents run in parallel and all append events to the
+// same run. The lock is transaction-scoped, auto-releases on commit,
+// and adds no schema. Hash the runId into the int8 the function takes
+// via ``hashtext`` for a deterministic key.
+//
 // pg_notify is sent in the same transaction so the SSE endpoint's
 // LISTEN handler wakes up the moment the event is durable. Without
 // the NOTIFY, plan-approval / cancellation events from the API
@@ -265,18 +272,22 @@ export async function appendResearchEvent({
   payload: Record<string, unknown>;
 }): Promise<{ seq: number; ts: Date }> {
   try {
+    const lockKey = `research_event:${runId}`;
     const rows = await db.execute<{ seq: number; ts: Date }>(sql`
-      WITH inserted AS (
+      WITH locked AS (
+        SELECT pg_advisory_xact_lock(hashtext(${lockKey}))
+      ),
+      inserted AS (
         INSERT INTO "ResearchEvent" ("runId", "seq", "type", "payload")
-        VALUES (
-          ${runId},
+        SELECT
+          ${runId}::uuid,
           COALESCE(
-            (SELECT MAX("seq") FROM "ResearchEvent" WHERE "runId" = ${runId}),
+            (SELECT MAX("seq") FROM "ResearchEvent" WHERE "runId" = ${runId}::uuid),
             0
           ) + 1,
           ${type},
           ${JSON.stringify(payload)}::json
-        )
+        FROM locked
         RETURNING "seq", "ts"
       ),
       notified AS (

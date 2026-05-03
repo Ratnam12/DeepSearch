@@ -32,10 +32,14 @@ async def append_event(
 ) -> tuple[int, Any]:
     """Append one event row and broadcast a NOTIFY to live SSE clients.
 
-    The seq number is allocated atomically inside the same statement
-    that does the INSERT so concurrent writes can't collide on
-    ``(runId, seq)``. Returns the assigned ``(seq, ts)`` so callers
-    can log meaningful timestamps.
+    The seq is allocated atomically per run. Phase-3 onward runs many
+    sub-agents in parallel and they all want to append events for the
+    same run; without serialisation the ``MAX(seq) + 1`` read-modify-
+    write races and a unique-violation on ``(runId, seq)`` knocks one
+    sub-agent out. We use a per-run Postgres advisory lock
+    (``pg_advisory_xact_lock(hashtext(...))``) — held only for the
+    duration of the INSERT transaction, auto-released on commit, no
+    schema change needed.
     """
     payload = payload or {}
     payload_json = json.dumps(payload, default=str)
@@ -43,10 +47,18 @@ async def append_event(
     # UUID objects from RETURNING clauses — so callers might pass us a
     # UUID instance. Coerce here to keep the boundary consistent.
     run_id_str = str(run_id)
+    # The lock-key namespace is keyed on a fixed prefix so it can't
+    # collide with advisory locks elsewhere in the system if any get
+    # added later.
+    lock_key = f"research_event:{run_id_str}"
 
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))",
+                lock_key,
+            )
             row = await conn.fetchrow(
                 """
                 INSERT INTO "ResearchEvent" ("runId", "seq", "type", "payload")

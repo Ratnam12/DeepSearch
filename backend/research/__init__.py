@@ -18,10 +18,18 @@ from backend.research.state import (
     is_cancelled,
     transition_status,
 )
+from backend.research.subagent import (
+    SubagentResult,
+    SubagentSource,
+    run_subagent,
+)
+from backend.research.supervisor import run_research
 
 __all__ = [
     "RUN_PHASES",
     "ResearchPlan",
+    "SubagentResult",
+    "SubagentSource",
     "append_event",
     "claim_queued_run",
     "create_plan",
@@ -31,5 +39,7 @@ __all__ = [
     "is_cancelled",
     "notify_channel",
     "run_pipeline",
+    "run_research",
+    "run_subagent",
     "transition_status",
 ]

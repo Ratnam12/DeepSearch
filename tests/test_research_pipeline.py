@@ -26,6 +26,7 @@ Run with::
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -69,16 +70,17 @@ TEST_USER_ID = f"test-user-{os.getpid()}"
 def _worker_env() -> dict[str, str]:
     """Subprocess env: tight phase delays + auto-approval for the test.
 
-    ``DISABLE_PLANNER_LLM=true`` keeps the planner offline (returns a
-    deterministic stub plan) so the integration test doesn't need an
-    API key and finishes in seconds. The planner-LLM happy path is
-    exercised separately in :func:`test_planner_llm_call_smoke`,
-    which is gated on ``RUN_LLM_TESTS=1``.
+    ``DISABLE_PLANNER_LLM=true`` and ``DISABLE_SUBAGENT_LLM=true`` keep
+    both LLM-backed agents offline (deterministic stub plans + stub
+    findings) so integration tests don't need OpenRouter credentials
+    and finish in seconds. The LLM happy paths are exercised separately
+    via the gated ``RUN_LLM_TESTS=1`` opt-in.
     """
     env = os.environ.copy()
     env.setdefault("RESEARCH_PHASE_DELAY_S", "0.2")
     env.setdefault("RESEARCH_AUTO_APPROVE_AFTER_S", "2")
     env.setdefault("DISABLE_PLANNER_LLM", "true")
+    env.setdefault("DISABLE_SUBAGENT_LLM", "true")
     env.setdefault("PYTHONPATH", str(REPO_ROOT))
     return env
 
@@ -320,9 +322,10 @@ async def test_direct_pipeline_drives_a_run_inline() -> None:
     """
     os.environ.setdefault("RESEARCH_PHASE_DELAY_S", "0.05")
     os.environ.setdefault("RESEARCH_AUTO_APPROVE_AFTER_S", "1")
-    # Keep the planner offline for the in-process test too — the
-    # planner-LLM path has its own dedicated test.
+    # Keep both LLM-backed agents offline for the in-process test —
+    # their LLM paths have dedicated opt-in tests.
     os.environ.setdefault("DISABLE_PLANNER_LLM", "true")
+    os.environ.setdefault("DISABLE_SUBAGENT_LLM", "true")
     await _wipe_test_rows()
     run_id = await _create_run("integration-test direct")
 
@@ -347,6 +350,108 @@ async def test_direct_pipeline_drives_a_run_inline() -> None:
 
 
 # ── Resumable-runs visibility ────────────────────────────────────────────
+
+
+# ── Sub-agent ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_subagent_returns_stub_when_disabled() -> None:
+    """With DISABLE_SUBAGENT_LLM=true, ``run_subagent`` returns a stub
+    finding, persists a 'done' row, and emits the start/finish events."""
+    os.environ["DISABLE_SUBAGENT_LLM"] = "true"
+    await _reset_pool_for_test()
+    await _wipe_test_rows()
+
+    run_id = await _create_run("integration-test subagent stub")
+
+    from backend.research.subagent import run_subagent
+
+    result = await run_subagent(run_id, "sq-test", "What does the moon orbit?")
+
+    assert result.used_stub is True
+    assert result.model == "stub"
+    assert result.finding_md.strip()
+    assert len(result.sources) >= 1
+    for source in result.sources:
+        assert source.url
+
+    # Row was persisted with status='done'.
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            'SELECT * FROM "ResearchSubagent" WHERE "runId" = $1::uuid AND "id" = $2',
+            run_id,
+            "sq-test",
+        )
+    assert row is not None
+    assert row["status"] == "done"
+    assert row["findingMd"].strip()
+
+    # subagent_started + subagent_finished events appear.
+    types = await _list_event_types(run_id)
+    assert "subagent_started" in types
+    assert "subagent_finished" in types
+
+
+@pytest.mark.asyncio
+async def test_supervisor_runs_all_subagents_in_parallel() -> None:
+    """Supervisor reads the latest plan and runs one sub-agent per
+    sub-question, persisting a row for each. Stub sub-agents make this
+    deterministic and fast."""
+    os.environ["DISABLE_SUBAGENT_LLM"] = "true"
+    await _reset_pool_for_test()
+    await _wipe_test_rows()
+
+    from backend.research.supervisor import run_research
+
+    run_id = await _create_run("integration-test supervisor")
+
+    # Seed a plan directly so the supervisor has something to dispatch on.
+    pool = await get_pool()
+    sub_questions = [
+        {"id": "sqA", "question": "Q-A", "rationale": "rA"},
+        {"id": "sqB", "question": "Q-B", "rationale": "rB"},
+        {"id": "sqC", "question": "Q-C", "rationale": "rC"},
+    ]
+    outline = [
+        {"id": "s1", "title": "Background", "description": ""},
+        {"id": "s2", "title": "Findings", "description": ""},
+    ]
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO "ResearchPlan" ("runId", "version", "briefMd", "subQuestions", "outline", "approvedAt")
+            VALUES ($1::uuid, $2, $3, $4::json, $5::json, now())
+            """,
+            run_id,
+            1,
+            "stub brief",
+            json.dumps(sub_questions),
+            json.dumps(outline),
+        )
+
+    results = await run_research({"id": run_id, "query": "supervisor test"})
+    assert len(results) == 3
+    ids = {r.sub_agent_id for r in results}
+    assert ids == {"sqA", "sqB", "sqC"}
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            'SELECT "id", "status" FROM "ResearchSubagent" WHERE "runId" = $1::uuid ORDER BY "id"',
+            run_id,
+        )
+    assert [(r["id"], r["status"]) for r in rows] == [
+        ("sqA", "done"),
+        ("sqB", "done"),
+        ("sqC", "done"),
+    ]
+
+    types = await _list_event_types(run_id)
+    assert "research_dispatch" in types
+    assert "research_complete" in types
+    assert types.count("subagent_started") == 3
+    assert types.count("subagent_finished") == 3
 
 
 # ── Planner ──────────────────────────────────────────────────────────────
