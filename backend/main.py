@@ -94,6 +94,27 @@ def _inline_worker_disabled() -> bool:
     return os.environ.get("DISABLE_INLINE_WORKER", "").lower() in {"1", "true", "yes"}
 
 
+# Mutable status object the lifespan keeps updated so the
+# /api/v1/research-worker-status endpoint can report whether the
+# worker is alive, when it last claimed work, and the last error
+# message if it crashed. The HTTP server keeps serving even if the
+# worker's dead, so without this surface a stuck deploy looks
+# identical to "no queued work" from the outside.
+_RESEARCH_WORKER_STATE: dict[str, Any] = {
+    "configured": False,
+    "running": False,
+    "started_at": None,
+    "stopped_at": None,
+    "error": None,
+    "error_at": None,
+}
+
+
+def get_research_worker_state() -> dict[str, Any]:
+    """Snapshot of the inline worker's state — used by the status route."""
+    return dict(_RESEARCH_WORKER_STATE)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Run startup/shutdown logic around the app lifetime.
@@ -103,18 +124,64 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     picked up without needing a separate Railway service. The task
     is co-operatively cancelled on shutdown via a stop-event so the
     current run drains cleanly before SIGTERM expires.
+
+    A done-callback surfaces silent crashes (``DATABASE_URL`` missing,
+    Postgres unreachable, etc.) into the application log AND into
+    ``_RESEARCH_WORKER_STATE`` so the frontend's research-status
+    probe can show an honest "worker offline" state instead of the
+    "Waiting for the worker…" placeholder spinning forever.
     """
     stop_event: asyncio.Event | None = None
     worker_task: asyncio.Task[None] | None = None
 
     if _inline_worker_disabled():
         logger.info("research worker: inline mode disabled via env")
+        _RESEARCH_WORKER_STATE.update({
+            "configured": False,
+            "running": False,
+        })
     else:
+        from datetime import datetime, timezone
+
         stop_event = asyncio.Event()
+        _RESEARCH_WORKER_STATE.update({
+            "configured": True,
+            "running": True,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "stopped_at": None,
+            "error": None,
+            "error_at": None,
+        })
+
+        def _on_done(task: asyncio.Task[None]) -> None:
+            ts = datetime.now(timezone.utc).isoformat()
+            _RESEARCH_WORKER_STATE["running"] = False
+            _RESEARCH_WORKER_STATE["stopped_at"] = ts
+            if task.cancelled():
+                logger.info("research worker: task cancelled")
+                return
+            exc = task.exception()
+            if exc is None:
+                logger.warning("research worker: task exited cleanly (unexpected mid-run)")
+                return
+            # `RuntimeError("DATABASE_URL/POSTGRES_URL not set...")` is
+            # the most common silent-killer in production. Surface
+            # the message so it's visible in Railway logs AND in the
+            # status endpoint.
+            error_message = f"{exc.__class__.__name__}: {exc}"
+            logger.error(
+                "research worker: task crashed — %s",
+                error_message,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+            _RESEARCH_WORKER_STATE["error"] = error_message
+            _RESEARCH_WORKER_STATE["error_at"] = ts
+
         worker_task = asyncio.create_task(
             research_worker_main_loop(stop_event),
             name="research-worker",
         )
+        worker_task.add_done_callback(_on_done)
         logger.info("research worker: started in lifespan")
 
     try:
@@ -614,6 +681,18 @@ def build_app() -> FastAPI:
     )
 
     app.include_router(api_router, prefix="/api/v1")
+
+    @app.get("/api/v1/research-worker-status")
+    async def research_worker_status() -> dict[str, Any]:
+        """Diagnostic — is the inline research worker alive?
+
+        The frontend's research artifact card probes this when a run
+        sits in 'queued' for too long. Returns the live state object
+        the lifespan keeps updated. ``configured=true running=false``
+        with a non-null ``error`` is the diagnostic for "worker
+        crashed on startup, set DATABASE_URL on Railway".
+        """
+        return get_research_worker_state()
 
     @app.post("/chat")
     async def chat(request: ChatRequest) -> StreamingResponse:

@@ -1,6 +1,8 @@
 "use client";
 
+import { AnimatePresence, motion } from "framer-motion";
 import {
+  AlertTriangleIcon,
   CopyIcon,
   DownloadIcon,
   ExternalLinkIcon,
@@ -38,6 +40,23 @@ import type {
   ResearchSubagent,
   ResearchSubQuestion,
 } from "@/lib/db/schema";
+
+// Animation language matches DeepSearchToolGroup: 0.2s with the same
+// out-cubic easing curve, height + opacity + small Y offset on
+// expand/collapse, fade + scale-in for newly-mounted cards.
+const EASE: [number, number, number, number] = [0.22, 1, 0.36, 1];
+const FADE_UP = {
+  initial: { opacity: 0, y: 4 },
+  animate: { opacity: 1, y: 0 },
+  exit: { opacity: 0, y: -4 },
+  transition: { duration: 0.2, ease: EASE },
+};
+const COLLAPSE = {
+  initial: { height: 0, opacity: 0, y: -4 },
+  animate: { height: "auto" as const, opacity: 1, y: 0 },
+  exit: { height: 0, opacity: 0, y: -4 },
+  transition: { duration: 0.2, ease: EASE },
+};
 
 // In-chat artifact for a deep-research run.
 //
@@ -85,6 +104,15 @@ type SubagentLive = {
   stub: boolean;
 };
 
+type WorkerStatus = {
+  configured: boolean;
+  running: boolean;
+  error: string | null;
+  error_at: string | null;
+  started_at: string | null;
+  stopped_at: string | null;
+};
+
 function subagentFromRow(row: ResearchSubagent): SubagentLive {
   const rawStatus = row.status;
   const status: SubagentLive["status"] =
@@ -118,6 +146,7 @@ export function ResearchArtifactCard({
   const [events, setEvents] = useState<StreamEvent[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [workerStatus, setWorkerStatus] = useState<WorkerStatus | null>(null);
   const initialFetchedRef = useRef(false);
 
   // ── Initial snapshot fetch ───────────────────────────────────────────
@@ -169,6 +198,25 @@ export function ResearchArtifactCard({
       cancelled = true;
     };
   }, [runId]);
+
+  // ── Worker-offline probe ─────────────────────────────────────────────
+  // If the run sits in 'queued' for more than 12 seconds with zero
+  // events, ping the backend's worker-status endpoint. If the worker
+  // crashed (e.g. DATABASE_URL missing on Railway) we surface that
+  // state in the card so the user gets an honest signal instead of
+  // the optimistic "Waiting for the worker…" forever.
+  useEffect(() => {
+    if (!run) return;
+    if (run.status !== "queued") return;
+    if (events.length > 0) return;
+    const timer = setTimeout(() => {
+      void fetch("/api/research/worker-status", { cache: "no-store" })
+        .then((r) => r.json())
+        .then((status) => setWorkerStatus(status))
+        .catch(() => undefined);
+    }, 12_000);
+    return () => clearTimeout(timer);
+  }, [run, events.length]);
 
   // ── Live SSE subscription ────────────────────────────────────────────
   const isTerminal = run ? TERMINAL_STATUSES.has(run.status) : false;
@@ -450,20 +498,30 @@ export function ResearchArtifactCard({
   // ── Render ───────────────────────────────────────────────────────────
   if (loadError) {
     return (
-      <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-destructive text-sm">
+      <motion.div
+        animate={FADE_UP.animate}
+        className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-destructive text-sm"
+        initial={FADE_UP.initial}
+        transition={FADE_UP.transition}
+      >
         <p className="font-medium">Couldn&apos;t load research run</p>
         <p className="text-xs">{loadError}</p>
-      </div>
+      </motion.div>
     );
   }
 
   // While the snapshot is loading, show a stub so the chat doesn't reflow.
   if (!run) {
     return (
-      <div className="flex items-center gap-2 rounded-lg border border-border bg-card p-3 text-muted-foreground text-sm">
+      <motion.div
+        animate={FADE_UP.animate}
+        className="flex items-center gap-2 rounded-lg border border-border bg-card p-3 text-muted-foreground text-sm"
+        initial={FADE_UP.initial}
+        transition={FADE_UP.transition}
+      >
         <Loader2Icon className="size-3.5 animate-spin" />
         Loading research run…
-      </div>
+      </motion.div>
     );
   }
 
@@ -491,11 +549,26 @@ export function ResearchArtifactCard({
   // status header, a brief progress line, an inline plan-approval card
   // (only when status='awaiting_approval'), and a "Show progress"
   // button that opens the full sheet.
+  const workerOffline =
+    workerStatus !== null &&
+    workerStatus.configured === true &&
+    workerStatus.running === false;
+
   return (
     <>
-      <div className="rounded-lg border border-border bg-card">
+      <motion.div
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        className="rounded-lg border border-border bg-card overflow-hidden"
+        initial={{ opacity: 0, y: 6, scale: 0.985 }}
+        transition={{ duration: 0.25, ease: EASE }}
+      >
         <div className="flex items-start gap-3 p-4">
-          <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+          <div
+            className={cn(
+              "flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary",
+              !isFailed && !isCancelled && "animate-pulse"
+            )}
+          >
             <TelescopeIcon className="size-4" />
           </div>
           <div className="min-w-0 flex-1">
@@ -511,32 +584,75 @@ export function ResearchArtifactCard({
             <p className="mt-1 line-clamp-2 text-muted-foreground text-xs leading-snug">
               {query}
             </p>
-            <ProgressLine
-              status={status}
-              completedSubagents={completedSubagents}
-              totalSubagents={totalSubagents}
-              sourceCount={sourceCount}
-            />
+            <AnimatePresence initial={false} mode="wait">
+              <motion.div
+                animate={FADE_UP.animate}
+                exit={FADE_UP.exit}
+                initial={FADE_UP.initial}
+                key={status}
+                transition={FADE_UP.transition}
+              >
+                <ProgressLine
+                  completedSubagents={completedSubagents}
+                  sourceCount={sourceCount}
+                  status={status}
+                  totalSubagents={totalSubagents}
+                />
+              </motion.div>
+            </AnimatePresence>
+
+            {workerOffline && (
+              <WorkerOfflineNotice status={workerStatus} />
+            )}
           </div>
         </div>
 
-        {plan && status === "awaiting_approval" && (
-          <PlanApprovalCard
-            events={events}
-            initialOutline={
-              (Array.isArray(plan.outline)
-                ? (plan.outline as ResearchOutlineSection[])
-                : []) ?? []
-            }
-            initialSubQuestions={
-              (Array.isArray(plan.subQuestions)
-                ? (plan.subQuestions as ResearchSubQuestion[])
-                : []) ?? []
-            }
-            onApprove={onApprovePlan}
-            plan={plan}
-          />
-        )}
+        <AnimatePresence initial={false}>
+          {plan && status === "awaiting_approval" && (
+            <motion.div
+              animate={COLLAPSE.animate}
+              exit={COLLAPSE.exit}
+              initial={COLLAPSE.initial}
+              key={`plan-${plan.runId}-${plan.version}`}
+              style={{ overflow: "hidden" }}
+              transition={COLLAPSE.transition}
+            >
+              <PlanApprovalCard
+                events={events}
+                initialOutline={
+                  (Array.isArray(plan.outline)
+                    ? (plan.outline as ResearchOutlineSection[])
+                    : []) ?? []
+                }
+                initialSubQuestions={
+                  (Array.isArray(plan.subQuestions)
+                    ? (plan.subQuestions as ResearchSubQuestion[])
+                    : []) ?? []
+                }
+                onApprove={onApprovePlan}
+                plan={plan}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence initial={false}>
+          {(status === "researching" || status === "writing") &&
+            (subagentList.length > 0 || events.length > 0) && (
+              <motion.div
+                animate={COLLAPSE.animate}
+                exit={COLLAPSE.exit}
+                initial={COLLAPSE.initial}
+                style={{ overflow: "hidden" }}
+                transition={COLLAPSE.transition}
+              >
+                <InlineLiveTimeline
+                  events={events}
+                  subagentList={subagentList}
+                />
+              </motion.div>
+            )}
+        </AnimatePresence>
 
         <div className="flex items-center justify-between border-border/60 border-t bg-muted/30 px-3 py-2">
           <Button
@@ -559,7 +675,7 @@ export function ResearchArtifactCard({
             </Button>
           )}
         </div>
-      </div>
+      </motion.div>
 
       <ProgressSheet
         events={events}
@@ -573,6 +689,120 @@ export function ResearchArtifactCard({
         subagentList={subagentList}
       />
     </>
+  );
+}
+
+// ── Worker-offline notice ───────────────────────────────────────────────
+
+
+function WorkerOfflineNotice({ status }: { status: WorkerStatus }) {
+  const detail = status.error?.toLowerCase() ?? "";
+  const hint = detail.includes("database_url")
+    ? "Set DATABASE_URL in your Railway env vars and redeploy."
+    : detail.includes("cannot reach backend")
+    ? "Backend service is unreachable from the frontend."
+    : null;
+  return (
+    <motion.div
+      animate={FADE_UP.animate}
+      className="mt-3 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-amber-700 text-xs dark:text-amber-400"
+      initial={FADE_UP.initial}
+      transition={FADE_UP.transition}
+    >
+      <AlertTriangleIcon className="size-3.5 shrink-0" />
+      <div className="min-w-0">
+        <p className="font-medium">Research worker is offline</p>
+        {status.error ? (
+          <p className="mt-0.5 break-all opacity-90">{status.error}</p>
+        ) : null}
+        {hint ? <p className="mt-1 opacity-80">{hint}</p> : null}
+      </div>
+    </motion.div>
+  );
+}
+
+// ── Inline live timeline (last few events with fade-in) ─────────────────
+
+
+function InlineLiveTimeline({
+  events,
+  subagentList,
+}: {
+  events: StreamEvent[];
+  subagentList: SubagentLive[];
+}) {
+  // Derive a friendlier "current activity" line by combining
+  // sub-agent latest actions and the most recent event type. This
+  // gives the user something to read while research runs without
+  // them having to open the sheet.
+  const recentEvents = useMemo(() => events.slice(-5), [events]);
+  const runningSubagents = subagentList.filter((s) => s.status === "running");
+
+  return (
+    <div className="border-border/60 border-t bg-muted/15 px-4 py-3">
+      <div className="flex items-center gap-2">
+        <PulsingDot />
+        <span className="font-medium text-[11px] text-muted-foreground uppercase tracking-wide">
+          Live progress
+        </span>
+      </div>
+
+      {runningSubagents.length > 0 && (
+        <div className="mt-2 space-y-1.5">
+          {runningSubagents.slice(0, 3).map((sa) => (
+            <motion.div
+              animate={{ opacity: 1, x: 0 }}
+              className="flex items-start gap-2 text-xs"
+              initial={{ opacity: 0, x: -6 }}
+              key={sa.id}
+              transition={{ duration: 0.2, ease: EASE }}
+            >
+              <Loader2Icon className="mt-0.5 size-3 shrink-0 animate-spin text-primary" />
+              <div className="min-w-0">
+                <span className="line-clamp-1 font-medium text-foreground/90">
+                  {sa.subQuestion}
+                </span>
+                {sa.latestAction && (
+                  <span className="line-clamp-1 text-[11px] text-muted-foreground">
+                    {sa.latestAction}
+                    {sa.latestActionDetail ? `: ${sa.latestActionDetail}` : ""}
+                  </span>
+                )}
+              </div>
+            </motion.div>
+          ))}
+        </div>
+      )}
+
+      {recentEvents.length > 0 && (
+        <ol className="mt-2 space-y-0.5 border-border/40 border-l pl-2.5">
+          <AnimatePresence initial={false}>
+            {recentEvents.map((evt) => (
+              <motion.li
+                animate={{ opacity: 1, x: 0 }}
+                className="flex items-center gap-2 text-[11px] text-muted-foreground"
+                exit={{ opacity: 0 }}
+                initial={{ opacity: 0, x: -4 }}
+                key={evt.seq}
+                transition={{ duration: 0.18, ease: EASE }}
+              >
+                <span className="size-1 shrink-0 rounded-full bg-muted-foreground/40" />
+                <span className="truncate">{prettyType(evt.type)}</span>
+              </motion.li>
+            ))}
+          </AnimatePresence>
+        </ol>
+      )}
+    </div>
+  );
+}
+
+function PulsingDot() {
+  return (
+    <span className="relative flex size-2 items-center justify-center">
+      <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary/60 opacity-60" />
+      <span className="relative inline-flex size-1.5 rounded-full bg-primary" />
+    </span>
   );
 }
 
