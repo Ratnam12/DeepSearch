@@ -67,10 +67,18 @@ TEST_USER_ID = f"test-user-{os.getpid()}"
 
 
 def _worker_env() -> dict[str, str]:
-    """Subprocess env: tight phase delays + auto-approval for the test."""
+    """Subprocess env: tight phase delays + auto-approval for the test.
+
+    ``DISABLE_PLANNER_LLM=true`` keeps the planner offline (returns a
+    deterministic stub plan) so the integration test doesn't need an
+    API key and finishes in seconds. The planner-LLM happy path is
+    exercised separately in :func:`test_planner_llm_call_smoke`,
+    which is gated on ``RUN_LLM_TESTS=1``.
+    """
     env = os.environ.copy()
     env.setdefault("RESEARCH_PHASE_DELAY_S", "0.2")
     env.setdefault("RESEARCH_AUTO_APPROVE_AFTER_S", "2")
+    env.setdefault("DISABLE_PLANNER_LLM", "true")
     env.setdefault("PYTHONPATH", str(REPO_ROOT))
     return env
 
@@ -312,6 +320,9 @@ async def test_direct_pipeline_drives_a_run_inline() -> None:
     """
     os.environ.setdefault("RESEARCH_PHASE_DELAY_S", "0.05")
     os.environ.setdefault("RESEARCH_AUTO_APPROVE_AFTER_S", "1")
+    # Keep the planner offline for the in-process test too — the
+    # planner-LLM path has its own dedicated test.
+    os.environ.setdefault("DISABLE_PLANNER_LLM", "true")
     await _wipe_test_rows()
     run_id = await _create_run("integration-test direct")
 
@@ -336,6 +347,56 @@ async def test_direct_pipeline_drives_a_run_inline() -> None:
 
 
 # ── Resumable-runs visibility ────────────────────────────────────────────
+
+
+# ── Planner ──────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_planner_returns_stub_when_disabled() -> None:
+    """With DISABLE_PLANNER_LLM=true, ``create_plan`` returns a valid
+    stub plan that satisfies the schema constraints the LLM path is
+    held to (3+ sub-questions, 3+ outline sections, non-empty brief)."""
+    os.environ["DISABLE_PLANNER_LLM"] = "true"
+    from backend.research.planner import create_plan
+
+    plan = await create_plan("How does prompt caching work in LLMs?")
+
+    assert plan.used_stub is True
+    assert plan.model == "stub"
+    assert plan.brief_md.strip()
+    assert 3 <= len(plan.sub_questions) <= 8
+    for sq in plan.sub_questions:
+        assert sq["id"] and sq["question"] and sq["rationale"]
+    assert 3 <= len(plan.outline) <= 6
+    for sec in plan.outline:
+        assert sec["id"] and sec["title"] and sec["description"]
+
+
+@pytest.mark.skipif(
+    os.environ.get("RUN_LLM_TESTS", "").lower() not in {"1", "true", "yes"},
+    reason="LLM-backed planner test is opt-in (set RUN_LLM_TESTS=1).",
+)
+@pytest.mark.asyncio
+async def test_planner_llm_call_smoke() -> None:
+    """Hit the real OpenRouter pro model and verify the response
+    parses + validates. Runs only when explicitly enabled because it
+    costs real money each invocation."""
+    # Belt-and-suspenders — ensure no leftover env var disables it.
+    os.environ.pop("DISABLE_PLANNER_LLM", None)
+    from backend.research.planner import create_plan
+
+    plan = await create_plan(
+        "What are the trade-offs between BERT-style and decoder-only LLMs?"
+    )
+
+    assert plan.used_stub is False
+    assert plan.brief_md.strip()
+    assert 3 <= len(plan.sub_questions) <= 8
+    assert 3 <= len(plan.outline) <= 6
+
+
+# ── Other ────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio

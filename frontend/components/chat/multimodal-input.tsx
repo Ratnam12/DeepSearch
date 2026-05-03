@@ -9,6 +9,7 @@ import {
   BrainIcon,
   EyeIcon,
   LockIcon,
+  TelescopeIcon,
   WrenchIcon,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
@@ -167,6 +168,17 @@ function PureMultimodalInput({
     ""
   );
 
+  // DeepSearch toggle: when on, the next submit creates a research run
+  // (POST /api/research) and navigates to /research/<id> instead of
+  // sending a chat message. Sticky across reloads — Gemini-style — so
+  // a user who's in research mode stays there until they explicitly
+  // turn it off.
+  const [deepSearchEnabled, setDeepSearchEnabled] = useLocalStorage(
+    "deepSearchEnabled",
+    false
+  );
+  const [creatingResearchRun, setCreatingResearchRun] = useState(false);
+
   useEffect(() => {
     if (textareaRef.current) {
       const domValue = textareaRef.current.value;
@@ -269,6 +281,53 @@ function PureMultimodalInput({
   const [isDragging, setIsDragging] = useState(false);
   const dragCounter = useRef(0);
 
+  const submitDeepResearch = useCallback(
+    async (queryText: string) => {
+      // Single source of truth for the deep-research submit path.
+      // POST /api/research returns the new runId; we navigate to the
+      // run's page so the (research) layout takes over and the live
+      // event stream starts immediately.
+      setCreatingResearchRun(true);
+      try {
+        const base = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+        const res = await fetch(`${base}/api/research`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: queryText }),
+        });
+        if (!res.ok) {
+          const body = await res.text().catch(() => "");
+          toast.error(
+            body ||
+              "Couldn't start the research run. Please try again in a moment."
+          );
+          return false;
+        }
+        const data = (await res.json()) as { id?: string };
+        if (!data?.id) {
+          toast.error("Research run created but no id was returned.");
+          return false;
+        }
+        // Clear input + attachments first, mirror the chat path.
+        setAttachments([]);
+        setLocalStorageInput("");
+        setInput("");
+        router.push(`${base}/research/${data.id}`);
+        return true;
+      } catch (err) {
+        toast.error(
+          err instanceof Error
+            ? err.message
+            : "Network error starting research run"
+        );
+        return false;
+      } finally {
+        setCreatingResearchRun(false);
+      }
+    },
+    [router, setAttachments, setInput, setLocalStorageInput]
+  );
+
   const submitForm = useCallback(() => {
     if (isLoaded && !isSignedIn) {
       const pending = input.trim();
@@ -285,6 +344,26 @@ function PureMultimodalInput({
         .join("&");
       const target = qs ? `${base}/?${qs}` : `${base}/`;
       openSignIn({ forceRedirectUrl: target, signUpForceRedirectUrl: target });
+      return;
+    }
+
+    const text = input.trim();
+
+    // ── DeepSearch toggle path ──────────────────────────────────────
+    // Branches before the chat-message path — when DeepSearch is on,
+    // we never call sendMessage; we hand the query off to the
+    // research worker and navigate to the run's page.
+    if (deepSearchEnabled) {
+      if (!text) {
+        return;
+      }
+      if (attachments.length > 0) {
+        toast(
+          "Image and PDF research isn't wired into the planner yet — sending the text query only.",
+          { duration: 4000 }
+        );
+      }
+      void submitDeepResearch(text);
       return;
     }
 
@@ -307,7 +386,6 @@ function PureMultimodalInput({
       `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/chat/${chatId}`
     );
 
-    const text = input.trim();
     const fileParts = attachments.map((attachment) => ({
       displayUrl: attachment.url,
       filename: attachment.name,
@@ -347,6 +425,8 @@ function PureMultimodalInput({
     openSignIn,
     selectedModelId,
     selectedModelHasVision,
+    deepSearchEnabled,
+    submitDeepResearch,
   ]);
 
   const uploadFile = useCallback(async (file: File) => {
@@ -705,6 +785,11 @@ function PureMultimodalInput({
                 onModelChange={onModelChange}
                 selectedModelId={selectedModelId}
               />
+              <DeepSearchToggle
+                disabled={creatingResearchRun}
+                enabled={deepSearchEnabled}
+                onToggle={() => setDeepSearchEnabled(!deepSearchEnabled)}
+              />
             </PromptInputTools>
 
             {status === "submitted" || status === "streaming" ? (
@@ -713,13 +798,14 @@ function PureMultimodalInput({
               <PromptInputSubmit
                 className={cn(
                   "h-7 w-7 rounded-xl transition-all duration-200",
-                  canSubmit
+                  canSubmit && !creatingResearchRun
                     ? "bg-foreground text-background hover:opacity-85 active:scale-95"
                     : "bg-muted text-muted-foreground/25 cursor-not-allowed"
                 )}
                 data-testid="send-button"
                 disabled={
                   !canSubmit ||
+                  creatingResearchRun ||
                   uploadQueue.length > 0 ||
                   (status !== "ready" && status !== "error")
                 }
@@ -767,6 +853,50 @@ export const MultimodalInput = memo(
     return true;
   }
 );
+
+function PureDeepSearchToggle({
+  enabled,
+  onToggle,
+  disabled,
+}: {
+  enabled: boolean;
+  onToggle: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          aria-pressed={enabled}
+          className={cn(
+            "h-7 gap-1.5 rounded-lg border px-2 text-[12px] transition-colors",
+            enabled
+              ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/15"
+              : "border-border/40 text-muted-foreground hover:text-foreground"
+          )}
+          data-testid="deepsearch-toggle"
+          disabled={disabled}
+          onClick={(event) => {
+            event.preventDefault();
+            onToggle();
+          }}
+          variant="ghost"
+        >
+          <TelescopeIcon className="size-3.5" />
+          <span className="font-medium">DeepSearch</span>
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="top">
+        {enabled
+          ? "DeepSearch is on. Submit will start a multi-step research run."
+          : "Turn on DeepSearch to run a multi-step research agent that produces a cited report."}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+const DeepSearchToggle = memo(PureDeepSearchToggle);
+
 
 function PureAttachmentsButton({
   fileInputRef,

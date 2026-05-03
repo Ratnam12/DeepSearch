@@ -1,11 +1,12 @@
 "use client";
 
 import { format } from "date-fns";
-import { Loader2Icon } from "lucide-react";
+import { Loader2Icon, PlusIcon, XIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import type {
+  ResearchOutlineSection,
   ResearchPlan,
   ResearchReport,
   ResearchRun,
@@ -161,27 +162,33 @@ export function ResearchRunView({
   }, [run.id, run.status]);
 
   // ── Plan approval ───────────────────────────────────────────────────
-  const onApprovePlan = useCallback(async () => {
-    if (!plan || approving) return;
-    setApproving(true);
-    try {
-      const res = await fetch(`/api/research/${run.id}/plan`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        toast.error(`Couldn't approve plan: ${text}`);
-        return;
+  const onApprovePlan = useCallback(
+    async (edits?: {
+      subQuestions: ResearchSubQuestion[];
+      outline: ResearchOutlineSection[];
+    }) => {
+      if (!plan || approving) return;
+      setApproving(true);
+      try {
+        const res = await fetch(`/api/research/${run.id}/plan`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(edits ?? {}),
+        });
+        if (!res.ok) {
+          const text = await res.text();
+          toast.error(`Couldn't approve plan: ${text}`);
+          return;
+        }
+        // Status will flip via the SSE stream.
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "approve failed");
+      } finally {
+        setApproving(false);
       }
-      // Status will flip via the SSE stream.
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "approve failed");
-    } finally {
-      setApproving(false);
-    }
-  }, [plan, approving, run.id]);
+    },
+    [plan, approving, run.id]
+  );
 
   const onCancel = useCallback(async () => {
     if (cancelling || TERMINAL_STATUSES.has(run.status)) return;
@@ -211,6 +218,12 @@ export function ResearchRunView({
     if (Array.isArray(plan.subQuestions)) return plan.subQuestions;
     return [];
   }, [plan?.subQuestions]);
+
+  const outline = useMemo<ResearchOutlineSection[]>(() => {
+    if (!plan?.outline) return [];
+    if (Array.isArray(plan.outline)) return plan.outline;
+    return [];
+  }, [plan?.outline]);
 
   return (
     <div className="grid h-dvh grid-rows-[auto_1fr] overflow-hidden">
@@ -246,9 +259,11 @@ export function ResearchRunView({
             {plan && run.status === "awaiting_approval" && (
               <PlanApprovalCard
                 approving={approving}
+                initialOutline={outline}
+                initialSubQuestions={subQuestions}
                 onApprove={onApprovePlan}
                 plan={plan}
-                subQuestions={subQuestions}
+                planEvents={events}
               />
             )}
 
@@ -297,47 +312,305 @@ function StatusPill({
 
 function PlanApprovalCard({
   plan,
-  subQuestions,
+  initialSubQuestions,
+  initialOutline,
   approving,
   onApprove,
+  planEvents,
 }: {
   plan: ResearchPlan;
-  subQuestions: ResearchSubQuestion[];
+  initialSubQuestions: ResearchSubQuestion[];
+  initialOutline: ResearchOutlineSection[];
   approving: boolean;
-  onApprove: () => void;
+  onApprove: (edits?: {
+    subQuestions: ResearchSubQuestion[];
+    outline: ResearchOutlineSection[];
+  }) => void;
+  planEvents: StreamEvent[];
 }) {
+  // Surface "this plan came from the deterministic stub, not the
+  // model" so a user staring at a generic-looking plan understands
+  // why. The planner stamps `stub: true` on plan_proposed events.
+  const planProposedEvent = useMemo(
+    () => planEvents.find((e) => e.type === "plan_proposed"),
+    [planEvents]
+  );
+  const usedStub = Boolean(planProposedEvent?.payload?.stub);
+  const plannerModel =
+    typeof planProposedEvent?.payload?.model === "string"
+      ? (planProposedEvent.payload.model as string)
+      : null;
+  // Local working copy so the user's typed edits don't lose focus on
+  // each keystroke (which would happen if we re-derived from props).
+  // Reset when the plan id/version changes.
+  const [draftSubQs, setDraftSubQs] =
+    useState<ResearchSubQuestion[]>(initialSubQuestions);
+  const [draftOutline, setDraftOutline] =
+    useState<ResearchOutlineSection[]>(initialOutline);
+  const planSignature = `${plan.runId}:${plan.version}`;
+  const planSignatureRef = useRef(planSignature);
+  if (planSignatureRef.current !== planSignature) {
+    planSignatureRef.current = planSignature;
+    setDraftSubQs(initialSubQuestions);
+    setDraftOutline(initialOutline);
+  }
+
+  const dirty = useMemo(() => {
+    if (draftSubQs.length !== initialSubQuestions.length) return true;
+    if (draftOutline.length !== initialOutline.length) return true;
+    for (let i = 0; i < draftSubQs.length; i += 1) {
+      const a = draftSubQs[i];
+      const b = initialSubQuestions[i];
+      if (a.id !== b.id || a.question !== b.question || a.rationale !== b.rationale)
+        return true;
+    }
+    for (let i = 0; i < draftOutline.length; i += 1) {
+      const a = draftOutline[i];
+      const b = initialOutline[i];
+      if (a.id !== b.id || a.title !== b.title || a.description !== b.description)
+        return true;
+    }
+    return false;
+  }, [draftSubQs, draftOutline, initialSubQuestions, initialOutline]);
+
+  const updateSubQ = (index: number, patch: Partial<ResearchSubQuestion>) => {
+    setDraftSubQs((prev) =>
+      prev.map((q, i) => (i === index ? { ...q, ...patch } : q))
+    );
+  };
+
+  const removeSubQ = (index: number) => {
+    setDraftSubQs((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const addSubQ = () => {
+    if (draftSubQs.length >= 8) {
+      toast("Up to 8 sub-questions supported.");
+      return;
+    }
+    const idx = draftSubQs.length + 1;
+    setDraftSubQs((prev) => [
+      ...prev,
+      {
+        id: `sq${idx}-${Math.random().toString(36).slice(2, 6)}`,
+        question: "",
+        rationale: "",
+      },
+    ]);
+  };
+
+  const updateSection = (
+    index: number,
+    patch: Partial<ResearchOutlineSection>
+  ) => {
+    setDraftOutline((prev) =>
+      prev.map((s, i) => (i === index ? { ...s, ...patch } : s))
+    );
+  };
+
+  const removeSection = (index: number) => {
+    setDraftOutline((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const addSection = () => {
+    if (draftOutline.length >= 6) {
+      toast("Up to 6 outline sections supported.");
+      return;
+    }
+    const idx = draftOutline.length + 1;
+    setDraftOutline((prev) => [
+      ...prev,
+      {
+        id: `s${idx}-${Math.random().toString(36).slice(2, 6)}`,
+        title: "",
+        description: "",
+      },
+    ]);
+  };
+
+  const handleApprove = () => {
+    // Strip any whitespace-only fields. Keep server validation simple
+    // — anything blank would fail the zod schema on the API.
+    const cleanSubQs = draftSubQs
+      .map((q) => ({
+        ...q,
+        question: q.question.trim(),
+        rationale: q.rationale?.trim(),
+      }))
+      .filter((q) => q.question.length > 0);
+    const cleanOutline = draftOutline
+      .map((s) => ({
+        ...s,
+        title: s.title.trim(),
+        description: s.description?.trim(),
+      }))
+      .filter((s) => s.title.length > 0);
+
+    if (cleanSubQs.length < 1) {
+      toast.error("Add at least one sub-question before approving.");
+      return;
+    }
+    if (cleanOutline.length < 1) {
+      toast.error("Keep at least one outline section before approving.");
+      return;
+    }
+    onApprove(dirty ? { subQuestions: cleanSubQs, outline: cleanOutline } : undefined);
+  };
+
   return (
-    <div className="mb-6 rounded-lg border border-primary/30 bg-primary/5 p-4">
-      <p className="font-medium text-sm">Research plan</p>
-      <p className="mt-1 text-muted-foreground text-xs">
-        Review and approve before research begins. (Phase-1 plan editing
-        UI is read-only; full editing lands with the planner agent.)
-      </p>
+    <div className="mb-6 rounded-lg border border-primary/30 bg-primary/5 p-5">
+      <div className="flex items-baseline justify-between gap-3">
+        <div className="flex items-baseline gap-2">
+          <p className="font-medium text-sm">Research plan</p>
+          {plannerModel && !usedStub && (
+            <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+              {plannerModel}
+            </span>
+          )}
+          {usedStub && (
+            <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-700 dark:text-amber-400">
+              stub plan (LLM disabled)
+            </span>
+          )}
+        </div>
+        <p className="text-muted-foreground text-[11px]">
+          Review and edit before research begins.
+        </p>
+      </div>
       {plan.briefMd && (
-        <p className="mt-3 whitespace-pre-wrap text-sm">{plan.briefMd}</p>
+        <p className="mt-3 whitespace-pre-wrap text-foreground/90 text-sm leading-relaxed">
+          {plan.briefMd}
+        </p>
       )}
-      <ol className="mt-3 space-y-1 text-sm">
-        {subQuestions.map((q, idx) => (
-          <li className="flex gap-2" key={q.id}>
-            <span className="shrink-0 font-medium text-muted-foreground">
-              {idx + 1}.
-            </span>
-            <span>
-              <span className="font-medium">{q.question}</span>
-              {q.rationale && (
-                <span className="block text-muted-foreground text-xs">
-                  {q.rationale}
-                </span>
-              )}
-            </span>
-          </li>
-        ))}
-      </ol>
-      <div className="mt-4 flex justify-end">
-        <Button disabled={approving} onClick={onApprove} size="sm">
+
+      <PlanSection title="Sub-questions">
+        {draftSubQs.length === 0 && (
+          <p className="text-muted-foreground text-xs">
+            No sub-questions yet. Add at least one to proceed.
+          </p>
+        )}
+        <ol className="space-y-2.5">
+          {draftSubQs.map((q, idx) => (
+            <li
+              className="grid grid-cols-[18px_1fr_24px] items-start gap-2"
+              key={q.id}
+            >
+              <span className="pt-1.5 font-medium text-muted-foreground text-xs">
+                {idx + 1}.
+              </span>
+              <div className="space-y-1">
+                <input
+                  className="w-full rounded-md border border-border/60 bg-background px-2 py-1.5 font-medium text-sm focus-visible:border-primary focus-visible:outline-none"
+                  onChange={(e) => updateSubQ(idx, { question: e.target.value })}
+                  placeholder="Sub-question"
+                  type="text"
+                  value={q.question}
+                />
+                <input
+                  className="w-full rounded-md border border-transparent bg-transparent px-2 py-1 text-muted-foreground text-xs focus-visible:border-border focus-visible:bg-background focus-visible:outline-none"
+                  onChange={(e) =>
+                    updateSubQ(idx, { rationale: e.target.value })
+                  }
+                  placeholder="Why this matters (optional)"
+                  type="text"
+                  value={q.rationale ?? ""}
+                />
+              </div>
+              <button
+                aria-label="Remove sub-question"
+                className="mt-1 inline-flex size-6 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
+                onClick={() => removeSubQ(idx)}
+                type="button"
+              >
+                <XIcon className="size-3.5" />
+              </button>
+            </li>
+          ))}
+        </ol>
+        <button
+          className="mt-1 inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-muted-foreground text-xs transition-colors hover:text-foreground"
+          onClick={addSubQ}
+          type="button"
+        >
+          <PlusIcon className="size-3" />
+          Add sub-question
+        </button>
+      </PlanSection>
+
+      <PlanSection title="Report outline">
+        <ol className="space-y-2">
+          {draftOutline.map((sec, idx) => (
+            <li
+              className="grid grid-cols-[18px_1fr_24px] items-start gap-2"
+              key={sec.id}
+            >
+              <span className="pt-1.5 font-medium text-muted-foreground text-xs">
+                {idx + 1}.
+              </span>
+              <div className="space-y-1">
+                <input
+                  className="w-full rounded-md border border-border/60 bg-background px-2 py-1.5 font-medium text-sm focus-visible:border-primary focus-visible:outline-none"
+                  onChange={(e) => updateSection(idx, { title: e.target.value })}
+                  placeholder="Section title"
+                  type="text"
+                  value={sec.title}
+                />
+                <input
+                  className="w-full rounded-md border border-transparent bg-transparent px-2 py-1 text-muted-foreground text-xs focus-visible:border-border focus-visible:bg-background focus-visible:outline-none"
+                  onChange={(e) =>
+                    updateSection(idx, { description: e.target.value })
+                  }
+                  placeholder="What goes in this section (optional)"
+                  type="text"
+                  value={sec.description ?? ""}
+                />
+              </div>
+              <button
+                aria-label="Remove section"
+                className="mt-1 inline-flex size-6 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
+                onClick={() => removeSection(idx)}
+                type="button"
+              >
+                <XIcon className="size-3.5" />
+              </button>
+            </li>
+          ))}
+        </ol>
+        <button
+          className="mt-1 inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-muted-foreground text-xs transition-colors hover:text-foreground"
+          onClick={addSection}
+          type="button"
+        >
+          <PlusIcon className="size-3" />
+          Add section
+        </button>
+      </PlanSection>
+
+      <div className="mt-5 flex items-center justify-between">
+        <p className="text-muted-foreground text-[11px]">
+          {dirty ? "Edits will be saved on approval." : "Plan unchanged."}
+        </p>
+        <Button disabled={approving} onClick={handleApprove} size="sm">
           {approving ? "Approving…" : "Approve & start research"}
         </Button>
       </div>
+    </div>
+  );
+}
+
+function PlanSection({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="mt-4 space-y-2">
+      <h3 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+        {title}
+      </h3>
+      {children}
     </div>
   );
 }

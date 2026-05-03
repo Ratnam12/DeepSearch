@@ -20,6 +20,7 @@ import os
 from typing import Any
 
 from backend.research.events import append_event
+from backend.research.planner import create_plan
 from backend.research.state import (
     is_cancelled,
     transition_status,
@@ -66,48 +67,47 @@ async def _check_cancelled(run_id: str) -> None:
 
 
 async def _run_scoping(run: dict[str, Any]) -> None:
-    """Phase 1: scoping. Stub — emits a 'brief_drafted' event."""
+    """Phase 1: scoping.
+
+    Lightweight acknowledgement step — emits a ``scoping_started``
+    event so the SSE timeline shows the agent is engaging with the
+    query. The actual scope analysis is folded into the planner call
+    in phase 2 (one LLM round-trip is enough for both).
+    """
     run_id = run["id"]
     await asyncio.sleep(_phase_delay())
     await _check_cancelled(run_id)
     await append_event(
         run_id,
-        "brief_drafted",
-        {
-            "briefMd": (
-                f"**Research goal:** {run['query']}\n\n"
-                "*(stub brief — phase-1 scaffolding; the real scoper "
-                "agent will replace this in phase 2)*"
-            ),
-        },
+        "scoping_started",
+        {"query": run["query"]},
     )
 
 
 async def _run_planning(run: dict[str, Any]) -> None:
-    """Phase 2: planning. Stub — writes a plan row + emits plan_proposed."""
+    """Phase 2: planning.
+
+    Calls :func:`create_plan` once to produce ``briefMd`` +
+    ``subQuestions`` + ``outline`` from the user's query. The result
+    is persisted as a ``ResearchPlan`` row (version 1) and announced
+    via two timeline events:
+
+    - ``brief_drafted`` carries just ``briefMd`` so the UI can render
+      the framing paragraph as soon as it's ready, even before the
+      full plan card lands.
+    - ``plan_proposed`` carries the full plan and is what the
+      approval card listens for.
+
+    Failures inside the planner itself are caught there (it falls
+    back to a deterministic stub plan with a clear ``stub: true`` flag
+    on the event payload), so this function only fails if the DB
+    write does — which we want to surface as a normal pipeline
+    failure.
+    """
     run_id = run["id"]
-    await asyncio.sleep(_phase_delay())
     await _check_cancelled(run_id)
 
-    # A two-question stub plan is enough to exercise the
-    # subQuestions/outline JSON columns and the approval API.
-    sub_questions = [
-        {
-            "id": "sq1",
-            "question": f"What is the current state of: {run['query']}?",
-            "rationale": "Establish the baseline facts before going deep.",
-        },
-        {
-            "id": "sq2",
-            "question": f"What are the open debates around: {run['query']}?",
-            "rationale": "Surface the disagreements / live tensions.",
-        },
-    ]
-    outline = [
-        {"id": "s1", "title": "Background", "description": "Context and definitions."},
-        {"id": "s2", "title": "Findings", "description": "Per sub-question summaries."},
-        {"id": "s3", "title": "Open questions", "description": "What we still don't know."},
-    ]
+    plan = await create_plan(run["query"])
 
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -118,14 +118,26 @@ async def _run_planning(run: dict[str, Any]) -> None:
             """,
             run_id,
             1,
-            f"Stub research brief for: {run['query']}",
-            json.dumps(sub_questions),
-            json.dumps(outline),
+            plan.brief_md,
+            json.dumps(plan.sub_questions),
+            json.dumps(plan.outline),
         )
+
+    await append_event(
+        run_id,
+        "brief_drafted",
+        {"briefMd": plan.brief_md, "model": plan.model, "stub": plan.used_stub},
+    )
     await append_event(
         run_id,
         "plan_proposed",
-        {"version": 1, "subQuestions": sub_questions, "outline": outline},
+        {
+            "version": 1,
+            "subQuestions": plan.sub_questions,
+            "outline": plan.outline,
+            "model": plan.model,
+            "stub": plan.used_stub,
+        },
     )
 
 

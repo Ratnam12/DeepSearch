@@ -94,11 +94,35 @@ async function main() {
     if (!plan || plan.version !== 1) fail("getLatestResearchPlan", `version=${plan?.version}`);
     else log("saveResearchPlan + getLatestResearchPlan", true);
 
-    // ── approveResearchPlan ─────────────────────────────────────────
+    // ── approveResearchPlan (no edits) ──────────────────────────────
     await approveResearchPlan({ runId, version: 1 });
     const approvedPlan = await getLatestResearchPlan({ runId });
     if (!approvedPlan?.approvedAt) fail("approveResearchPlan", "approvedAt is null");
     else log("approveResearchPlan stamps approvedAt", true);
+
+    // ── approveResearchPlan (with user edits) ──────────────────────
+    // Mirrors the path the plan-approval card takes when the user
+    // tweaks sub-questions / outline before clicking approve.
+    await approveResearchPlan({
+      runId,
+      version: 1,
+      subQuestions: [
+        { id: "sq-edit", question: "edited question", rationale: "user added" },
+        { id: "sq-edit2", question: "second", rationale: "still here" },
+      ],
+      outline: [{ id: "s-edit", title: "edited section", description: "" }],
+    });
+    const editedPlan = await getLatestResearchPlan({ runId });
+    const editedSubQs = (editedPlan?.subQuestions ?? []) as Array<{
+      id: string;
+      question: string;
+    }>;
+    if (
+      editedSubQs.length !== 2 ||
+      editedSubQs[0]?.question !== "edited question"
+    )
+      fail("approveResearchPlan persists user edits", JSON.stringify(editedSubQs));
+    else log("approveResearchPlan persists user edits", true);
 
     // ── appendResearchEvent (atomic seq allocation) ────────────────
     const evtA = await appendResearchEvent({
@@ -157,6 +181,10 @@ async function main() {
     process.exit(1);
   }
   console.log("\nall checks ok");
+  // Explicit exit because the queries module's postgres client is
+  // module-scoped and never .end()'d, so the event loop has idle DB
+  // connections keeping it alive after the script's work is done.
+  process.exit(0);
 }
 
 main().catch((err) => {
