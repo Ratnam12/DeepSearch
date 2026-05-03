@@ -8,6 +8,13 @@
       "when": 1777671035983,
       "tag": "0000_regular_falcon",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1777835702680,
+      "tag": "0001_good_energizer",
+      "breakpoints": true
     }
   ]
 }

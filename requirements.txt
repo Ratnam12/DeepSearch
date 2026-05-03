@@ -21,6 +21,12 @@ qdrant-client>=1.9.0
 # ── Cache ────────────────────────────────────────────────────────────────
 upstash-redis
 
+# ── Research worker (deep-research agent) ────────────────────────────────
+# Direct Postgres access for the long-running worker process — Drizzle
+# is for the Next.js side; the Python worker talks to Neon over asyncpg
+# so it can use LISTEN/NOTIFY for live event fanout to the SSE endpoint.
+asyncpg>=0.29.0
+
 # ── Text splitting / LLM wrappers ────────────────────────────────────────
 langchain-text-splitters>=0.2.0
 langchain-openai>=0.1.0      # ChatOpenAI used by RAGAS LLM wrapper

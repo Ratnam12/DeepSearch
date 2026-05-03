@@ -20,9 +20,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from openai import OpenAIError
 from pydantic import BaseModel
-from sse_starlette.sse import EventSourceResponse
 
-from backend.agent import normalise_messages_for_openrouter, run_agent, run_chat
+from backend.agent import normalise_messages_for_openrouter, run_chat
 from backend.cache import cache_lookup, cache_store
 from backend.config import get_settings
 from backend.router import api_router
@@ -54,10 +53,6 @@ handler.setFormatter(JsonFormatter())
 root.addHandler(handler)
 root.setLevel(logging.INFO)
 logger = logging.getLogger("deepsearch")
-
-
-class SearchRequest(BaseModel):
-    question: str
 
 
 class ChatRequest(BaseModel):
@@ -93,28 +88,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Future: flush caches, close connections.
 
 
-def _sse(event: str, data: dict[str, Any]) -> dict[str, str]:
-    """Build an SSE event payload with JSON data."""
-    return {"event": event, "data": json.dumps(data)}
-
-
 def _error_message(exc: Exception) -> str:
     """Return a readable error message for the UI."""
     return str(exc).strip() or exc.__class__.__name__
-
-
-def _stream_response(question: str) -> EventSourceResponse:
-    """Return a configured SSE response for one search question."""
-    settings = get_settings()
-    return EventSourceResponse(
-        _search_events(question),
-        headers={
-            "Cache-Control": "no-cache, no-transform",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-        ping=settings.sse_ping_seconds,
-    )
 
 
 def _cors_origins(raw_origins: str) -> list[str]:
@@ -538,43 +514,6 @@ def _derive_artifact_title(messages: list[dict[str, Any]]) -> str:
     return "Research notes"
 
 
-async def _search_events(question: str) -> AsyncGenerator[dict[str, str], None]:
-    """Stream cache, agent, and completion events for one search question."""
-    cached = await _safe_cache_lookup(question)
-    if cached is not None:
-        yield _sse("cached", {"answer": cached})
-        yield _sse("done", {"cached": True})
-        return
-
-    started = perf_counter()
-    first_token_sent = False
-    answer_parts: list[str] = []
-    yield _sse("status", {"message": "Researching…"})
-
-    try:
-        async for event in run_agent(question):
-            match event["type"]:
-                case "tool_call":
-                    yield _sse("tool_call", {"name": event["name"]})
-                case "text":
-                    token = str(event["content"])
-                    answer_parts.append(token)
-                    data: dict[str, Any] = {"token": token}
-                    if not first_token_sent:
-                        data["ttft_ms"] = round((perf_counter() - started) * 1000)
-                        first_token_sent = True
-                    yield _sse("token", data)
-    except Exception as exc:
-        logger.exception("Search stream failed")
-        yield _sse("error", {"message": _error_message(exc)})
-        return
-
-    answer = "".join(answer_parts)
-    if answer:
-        await _safe_cache_store(question, answer)
-    yield _sse("done", {"cached": False})
-
-
 def build_app() -> FastAPI:
     settings = get_settings()
 
@@ -619,16 +558,6 @@ def build_app() -> FastAPI:
     )
 
     app.include_router(api_router, prefix="/api/v1")
-
-    @app.post("/search")
-    async def search(request: SearchRequest) -> EventSourceResponse:
-        """Stream a DeepSearch answer as server-sent events."""
-        return _stream_response(request.question)
-
-    @app.get("/search/stream")
-    async def search_stream(question: str) -> EventSourceResponse:
-        """Stream a DeepSearch answer over a native EventSource endpoint."""
-        return _stream_response(question)
 
     @app.post("/chat")
     async def chat(request: ChatRequest) -> StreamingResponse:
