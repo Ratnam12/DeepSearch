@@ -24,15 +24,24 @@ from backend.research.subagent import (
     run_subagent,
 )
 from backend.research.supervisor import run_research
+from backend.research.writer import (
+    Citation,
+    WriterReport,
+    dedup_sources,
+    run_writer,
+)
 
 __all__ = [
     "RUN_PHASES",
+    "Citation",
     "ResearchPlan",
     "SubagentResult",
     "SubagentSource",
+    "WriterReport",
     "append_event",
     "claim_queued_run",
     "create_plan",
+    "dedup_sources",
     "fetch_resumable_runs",
     "finalize_failed",
     "get_run",
@@ -41,5 +50,6 @@ __all__ = [
     "run_pipeline",
     "run_research",
     "run_subagent",
+    "run_writer",
     "transition_status",
 ]

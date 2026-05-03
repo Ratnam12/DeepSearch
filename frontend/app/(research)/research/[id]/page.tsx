@@ -4,6 +4,7 @@ import {
   getLatestResearchPlan,
   getLatestResearchReport,
   getResearchRunById,
+  listResearchSources,
   listResearchSubagents,
 } from "@/lib/db/queries-research";
 import { ResearchRunView } from "@/components/research/research-run-view";
@@ -33,9 +34,10 @@ export default async function ResearchRunPage({
     );
   }
 
-  const [plan, subagents, report] = await Promise.all([
+  const [plan, subagents, sources, report] = await Promise.all([
     getLatestResearchPlan({ runId: id }),
     listResearchSubagents({ runId: id }),
+    listResearchSources({ runId: id }),
     getLatestResearchReport({ runId: id }),
   ]);
 
@@ -44,6 +46,7 @@ export default async function ResearchRunPage({
       initialPlan={plan ?? null}
       initialReport={report ?? null}
       initialRun={run}
+      initialSources={sources}
       initialSubagents={subagents}
     />
   );

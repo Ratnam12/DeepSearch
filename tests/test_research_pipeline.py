@@ -81,6 +81,7 @@ def _worker_env() -> dict[str, str]:
     env.setdefault("RESEARCH_AUTO_APPROVE_AFTER_S", "2")
     env.setdefault("DISABLE_PLANNER_LLM", "true")
     env.setdefault("DISABLE_SUBAGENT_LLM", "true")
+    env.setdefault("DISABLE_WRITER_LLM", "true")
     env.setdefault("PYTHONPATH", str(REPO_ROOT))
     return env
 
@@ -322,10 +323,11 @@ async def test_direct_pipeline_drives_a_run_inline() -> None:
     """
     os.environ.setdefault("RESEARCH_PHASE_DELAY_S", "0.05")
     os.environ.setdefault("RESEARCH_AUTO_APPROVE_AFTER_S", "1")
-    # Keep both LLM-backed agents offline for the in-process test —
+    # Keep all LLM-backed agents offline for the in-process test —
     # their LLM paths have dedicated opt-in tests.
     os.environ.setdefault("DISABLE_PLANNER_LLM", "true")
     os.environ.setdefault("DISABLE_SUBAGENT_LLM", "true")
+    os.environ.setdefault("DISABLE_WRITER_LLM", "true")
     await _wipe_test_rows()
     run_id = await _create_run("integration-test direct")
 
@@ -350,6 +352,159 @@ async def test_direct_pipeline_drives_a_run_inline() -> None:
 
 
 # ── Resumable-runs visibility ────────────────────────────────────────────
+
+
+# ── Writer ───────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_writer_returns_stub_report_when_disabled() -> None:
+    """With DISABLE_WRITER_LLM=true, ``run_writer`` produces a stub
+    report that stitches sub-agent findings under outline headings,
+    persists a ResearchReport row, dedupes sources, and emits the
+    writer_started + sources_deduped + report_written events."""
+    os.environ["DISABLE_WRITER_LLM"] = "true"
+    await _reset_pool_for_test()
+    await _wipe_test_rows()
+
+    from backend.research.writer import run_writer
+
+    run_id = await _create_run("integration-test writer stub")
+    pool = await get_pool()
+
+    # Seed plan + two sub-agent rows so the writer has real inputs.
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO "ResearchPlan" ("runId", "version", "briefMd", "subQuestions", "outline")
+            VALUES ($1::uuid, 1, 'Brief about something', $2::json, $3::json)
+            """,
+            run_id,
+            json.dumps(
+                [
+                    {"id": "sq1", "question": "What is X?", "rationale": "r"},
+                    {"id": "sq2", "question": "What is Y?", "rationale": "r"},
+                ]
+            ),
+            json.dumps(
+                [
+                    {"id": "s1", "title": "Background", "description": "Context"},
+                    {"id": "s2", "title": "Findings", "description": ""},
+                ]
+            ),
+        )
+        for sub_id, finding, sources in (
+            (
+                "sq1",
+                "Finding for X with [1] and [2].",
+                [
+                    {"url": "https://example.com/a", "title": "A"},
+                    {"url": "https://example.com/b", "title": "B"},
+                ],
+            ),
+            (
+                "sq2",
+                "Finding for Y referencing [1] and a new source [2].",
+                [
+                    # Re-uses example.com/a (should NOT get a new citation
+                    # number) and adds example.com/c.
+                    {"url": "https://example.com/a", "title": "A"},
+                    {"url": "https://example.com/c", "title": "C"},
+                ],
+            ),
+        ):
+            await conn.execute(
+                """
+                INSERT INTO "ResearchSubagent"
+                    ("runId", "id", "subQuestion", "status", "model",
+                     "startedAt", "finishedAt", "findingMd", "sources")
+                VALUES ($1::uuid, $2, $3, 'done', 'stub', now(), now(), $4, $5::json)
+                """,
+                run_id,
+                sub_id,
+                "Q-" + sub_id,
+                finding,
+                json.dumps(sources),
+            )
+
+    report = await run_writer({"id": run_id, "query": "Phase 4 stub query"})
+
+    assert report.used_stub is True
+    assert report.markdown.strip()
+    assert "## Sources" in report.markdown
+    # Three unique URLs across the two sub-agents → three citations.
+    assert len(report.citations) == 3
+    citation_urls = {c.url for c in report.citations}
+    assert citation_urls == {
+        "https://example.com/a",
+        "https://example.com/b",
+        "https://example.com/c",
+    }
+    # Citation numbering is first-seen order.
+    nums = sorted(c.citation_num for c in report.citations)
+    assert nums == [1, 2, 3]
+
+    async with pool.acquire() as conn:
+        report_row = await conn.fetchrow(
+            'SELECT "version", "markdown" FROM "ResearchReport" WHERE "runId" = $1::uuid ORDER BY "version" DESC LIMIT 1',
+            run_id,
+        )
+        source_rows = await conn.fetch(
+            'SELECT "citationNum", "url" FROM "ResearchSource" WHERE "runId" = $1::uuid ORDER BY "citationNum"',
+            run_id,
+        )
+    assert report_row is not None
+    assert report_row["version"] == 1
+    assert report_row["markdown"].strip() == report.markdown.strip()
+    assert [
+        (r["citationNum"], r["url"]) for r in source_rows
+    ] == [
+        (1, "https://example.com/a"),
+        (2, "https://example.com/b"),
+        (3, "https://example.com/c"),
+    ]
+
+    types = await _list_event_types(run_id)
+    assert "writer_started" in types
+    assert "sources_deduped" in types
+    assert "report_written" in types
+
+
+@pytest.mark.asyncio
+async def test_dedup_sources_is_idempotent() -> None:
+    """Running ``dedup_sources`` twice on the same run produces the
+    same citation table and doesn't error on the duplicate inserts."""
+    os.environ["DISABLE_WRITER_LLM"] = "true"
+    await _reset_pool_for_test()
+    await _wipe_test_rows()
+
+    from backend.research.writer import dedup_sources
+
+    run_id = await _create_run("integration-test dedup")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO "ResearchSubagent"
+                ("runId", "id", "subQuestion", "status", "model",
+                 "startedAt", "finishedAt", "findingMd", "sources")
+            VALUES ($1::uuid, 'sq1', 'q', 'done', 'stub', now(), now(), 'f', $2::json)
+            """,
+            run_id,
+            json.dumps(
+                [
+                    {"url": "https://x.example/1", "title": "x1"},
+                    {"url": "https://x.example/2"},
+                ]
+            ),
+        )
+
+    first = await dedup_sources(run_id)
+    second = await dedup_sources(run_id)
+
+    assert [c.citation_num for c in first] == [1, 2]
+    assert [c.citation_num for c in second] == [1, 2]
+    assert {c.url for c in first} == {c.url for c in second}
 
 
 # ── Sub-agent ────────────────────────────────────────────────────────────

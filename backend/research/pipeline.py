@@ -26,6 +26,7 @@ from backend.research.state import (
     transition_status,
 )
 from backend.research.supervisor import run_research
+from backend.research.writer import run_writer
 from backend.research.db import get_pool
 
 logger = logging.getLogger("deepsearch.research.pipeline")
@@ -248,42 +249,17 @@ async def _run_researching(run: dict[str, Any]) -> None:
 
 
 async def _run_writing(run: dict[str, Any]) -> None:
-    """Phase 5: writing. Stub — writes a placeholder report."""
-    run_id = run["id"]
-    await asyncio.sleep(_phase_delay())
-    await _check_cancelled(run_id)
+    """Phase 5: writing.
 
-    markdown = (
-        f"# Research report: {run['query']}\n\n"
-        "## Background\n"
-        "*Stub background section — phase-1 scaffolding.*\n\n"
-        "## Findings\n"
-        "1. Stub finding from sub-agent 1.\n"
-        "2. Stub finding from sub-agent 2.\n\n"
-        "## Open questions\n"
-        "Phase 1 doesn't run real agents yet, so this report is a placeholder.\n"
-    )
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO "ResearchReport" ("runId", "version", "markdown", "sections")
-            VALUES ($1::uuid, $2, $3, $4::json)
-            """,
-            run_id,
-            1,
-            markdown,
-            json.dumps([
-                {"id": "s1", "title": "Background"},
-                {"id": "s2", "title": "Findings"},
-                {"id": "s3", "title": "Open questions"},
-            ]),
-        )
-    await append_event(
-        run_id,
-        "report_written",
-        {"version": 1, "characters": len(markdown)},
-    )
+    Hands off to the writer (:func:`run_writer`), which dedupes
+    sources across sub-agents, persists the global ``ResearchSource``
+    table, runs the writer LLM, and writes the final
+    ``ResearchReport`` row. The writer emits its own ``writer_started``
+    / ``sources_deduped`` / ``report_written`` events.
+    """
+    run_id = run["id"]
+    await _check_cancelled(run_id)
+    await run_writer(run)
 
 
 # ── Public entry point ───────────────────────────────────────────────────

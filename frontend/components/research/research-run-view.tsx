@@ -1,15 +1,24 @@
 "use client";
 
 import { format } from "date-fns";
-import { Loader2Icon, PlusIcon, XIcon } from "lucide-react";
+import {
+  CopyIcon,
+  DownloadIcon,
+  ExternalLinkIcon,
+  Loader2Icon,
+  PlusIcon,
+  XIcon,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { ResearchReportRenderer } from "@/components/research/report-renderer";
 import { Button } from "@/components/ui/button";
 import type {
   ResearchOutlineSection,
   ResearchPlan,
   ResearchReport,
   ResearchRun,
+  ResearchSource,
   ResearchSubagent,
   ResearchSubQuestion,
 } from "@/lib/db/schema";
@@ -77,16 +86,19 @@ export function ResearchRunView({
   initialRun,
   initialPlan,
   initialSubagents,
+  initialSources,
   initialReport,
 }: {
   initialRun: ResearchRun;
   initialPlan: ResearchPlan | null;
   initialSubagents: ResearchSubagent[];
+  initialSources: ResearchSource[];
   initialReport: ResearchReport | null;
 }) {
   const [run, setRun] = useState<ResearchRun>(initialRun);
   const [plan, setPlan] = useState<ResearchPlan | null>(initialPlan);
   const [report, setReport] = useState<ResearchReport | null>(initialReport);
+  const [sources, setSources] = useState<ResearchSource[]>(initialSources);
   const [events, setEvents] = useState<StreamEvent[]>([]);
   const [subagents, setSubagents] = useState<Record<string, SubagentLive>>(
     () => Object.fromEntries(
@@ -243,6 +255,7 @@ export function ResearchRunView({
           });
           break;
         }
+        case "sources_deduped":
         case "report_written":
         case "run_completed": {
           fetch(`/api/research/${run.id}`, { cache: "no-store" })
@@ -250,6 +263,9 @@ export function ResearchRunView({
             .then((snap) => {
               if (snap.run) setRun(snap.run);
               if (snap.report) setReport(snap.report);
+              if (Array.isArray(snap.sources)) {
+                setSources(snap.sources as ResearchSource[]);
+              }
               if (Array.isArray(snap.subagents)) {
                 setSubagents(
                   Object.fromEntries(
@@ -288,6 +304,8 @@ export function ResearchRunView({
       "subagent_finished",
       "subagent_failed",
       "research_complete",
+      "writer_started",
+      "sources_deduped",
       "report_written",
       "run_completed",
       "run_failed",
@@ -436,7 +454,12 @@ export function ResearchRunView({
             />
 
             {report ? (
-              <ReportPanel report={report} />
+              <ReportPanel
+                events={events}
+                query={run.query}
+                report={report}
+                sources={sources}
+              />
             ) : (
               <ReportPlaceholder run={run} subagentCount={subagentList.length} />
             )}
@@ -783,13 +806,136 @@ function PlanSection({
   );
 }
 
-function ReportPanel({ report }: { report: ResearchReport }) {
+function ReportPanel({
+  report,
+  sources,
+  events,
+  query,
+}: {
+  report: ResearchReport;
+  sources: ResearchSource[];
+  events: StreamEvent[];
+  query: string;
+}) {
+  // Pick up the writer's stub flag from the most recent
+  // ``report_written`` event so we can show the same amber indicator
+  // we use on the plan card when the LLM was disabled.
+  const writerEvent = useMemo(
+    () => [...events].reverse().find((e) => e.type === "report_written"),
+    [events]
+  );
+  const usedStub = Boolean(writerEvent?.payload?.stub);
+  const writerModel =
+    typeof writerEvent?.payload?.model === "string"
+      ? (writerEvent.payload.model as string)
+      : null;
+
+  const onCopy = useCallback(() => {
+    void navigator.clipboard
+      .writeText(report.markdown)
+      .then(() => toast.success("Report markdown copied"))
+      .catch(() => toast.error("Couldn't copy to clipboard"));
+  }, [report.markdown]);
+
+  const onDownload = useCallback(() => {
+    const blob = new Blob([report.markdown], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${slugForFilename(query)}.md`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }, [report.markdown, query]);
+
   return (
-    <article className="prose prose-sm dark:prose-invert max-w-none">
-      <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed">
-        {report.markdown}
-      </pre>
-    </article>
+    <section className="mt-6">
+      <header className="mb-4 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <h2 className="font-semibold text-sm">Report</h2>
+          {writerModel && !usedStub && (
+            <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+              {writerModel}
+            </span>
+          )}
+          {usedStub && (
+            <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-700 dark:text-amber-400">
+              stub report (LLM disabled)
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-1">
+          <Button
+            className="h-7 gap-1.5 px-2 text-[11px]"
+            onClick={onCopy}
+            size="sm"
+            variant="ghost"
+          >
+            <CopyIcon className="size-3" />
+            Copy
+          </Button>
+          <Button
+            className="h-7 gap-1.5 px-2 text-[11px]"
+            onClick={onDownload}
+            size="sm"
+            variant="ghost"
+          >
+            <DownloadIcon className="size-3" />
+            Download .md
+          </Button>
+        </div>
+      </header>
+
+      <article className="rounded-lg border border-border bg-card p-6">
+        <ResearchReportRenderer
+          citations={sources}
+          markdown={report.markdown}
+        />
+      </article>
+
+      {sources.length > 0 && <SourcesPanel sources={sources} />}
+    </section>
+  );
+}
+
+function SourcesPanel({ sources }: { sources: ResearchSource[] }) {
+  return (
+    <section className="mt-6">
+      <h3 className="font-semibold text-muted-foreground text-xs uppercase tracking-wide">
+        Sources ({sources.length})
+      </h3>
+      <ol className="mt-2 space-y-1.5">
+        {sources.map((s) => {
+          const domain = domainFor(s.url);
+          const label = s.title ?? domain;
+          return (
+            <li
+              className="flex items-start gap-2 rounded-md p-2 text-sm transition-colors hover:bg-muted/40"
+              key={s.citationNum}
+            >
+              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+                [{s.citationNum}]
+              </span>
+              <a
+                className="group min-w-0 flex-1"
+                href={s.url}
+                rel="noreferrer"
+                target="_blank"
+              >
+                <span className="line-clamp-1 font-medium text-foreground group-hover:underline">
+                  {label}
+                </span>
+                <span className="line-clamp-1 text-[11px] text-muted-foreground">
+                  {domain}
+                  <ExternalLinkIcon className="ml-1 inline size-3" />
+                </span>
+              </a>
+            </li>
+          );
+        })}
+      </ol>
+    </section>
   );
 }
 
@@ -801,6 +947,20 @@ function ReportPlaceholder({
   subagentCount: number;
 }) {
   if (subagentCount > 0 && run.status !== "done") {
+    if (run.status === "writing") {
+      return (
+        <div className="mt-6 flex items-center gap-3 rounded-lg border border-border bg-card p-5">
+          <Loader2Icon className="size-4 shrink-0 animate-spin text-primary" />
+          <div>
+            <p className="font-medium text-sm">Writing report…</p>
+            <p className="mt-0.5 text-muted-foreground text-xs">
+              The writer is fusing all sub-agent findings into a single
+              cited report.
+            </p>
+          </div>
+        </div>
+      );
+    }
     return null;
   }
   return (
@@ -812,6 +972,25 @@ function ReportPlaceholder({
       </p>
     </div>
   );
+}
+
+function domainFor(url: string): string {
+  try {
+    const u = new URL(url);
+    return u.hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
+function slugForFilename(query: string): string {
+  const slug = query
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 60);
+  return slug || "research-report";
 }
 
 function SubagentList({
