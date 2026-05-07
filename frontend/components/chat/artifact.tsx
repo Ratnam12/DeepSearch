@@ -335,6 +335,23 @@ function PureArtifact({
                   <div className="text-xs text-muted-foreground">
                     {`Updated ${formatDistance(new Date(document.createdAt), new Date(), { addSuffix: true })}`}
                   </div>
+                ) : artifact.kind === "research" ? (
+                  !metadata?.loaded ? (
+                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <div className="animate-spin">
+                        <LoaderIcon size={12} />
+                      </div>
+                      Loading…
+                    </div>
+                  ) : metadata?.run?.finishedAt ? (
+                    <div className="text-xs text-muted-foreground">
+                      {`Completed ${formatDistance(new Date(metadata.run.finishedAt), new Date(), { addSuffix: true })}`}
+                    </div>
+                  ) : (
+                    <div className="text-xs text-muted-foreground">
+                      Research report
+                    </div>
+                  )
                 ) : artifact.status === "streaming" ? (
                   <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                     <div className="animate-spin">

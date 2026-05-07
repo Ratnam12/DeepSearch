@@ -71,7 +71,11 @@ export const researchArtifact = new Artifact<
   description:
     "Deep-research report with sources and the full activity log of how it was researched.",
   initialize: async ({ documentId, setMetadata }) => {
-    setMetadata(initialMetadata);
+    // Don't reset to initialMetadata here — if we already have cached data for
+    // this run (e.g. user re-opens a completed run), the SWR cache holds
+    // loaded:true and we should keep showing it immediately while the refresh
+    // runs in the background. Resetting caused a spinner flash / persistent
+    // spinner on every re-open.
     try {
       const res = await fetch(`/api/research/${documentId}`, {
         cache: "no-store",
