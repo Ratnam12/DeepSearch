@@ -6,12 +6,12 @@ import {
   DownloadIcon,
   FileTextIcon,
   Link2Icon,
-  Loader2Icon,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Artifact } from "@/components/chat/create-artifact";
 import { ResearchReportRenderer } from "@/components/research/report-renderer";
+import { Spokes } from "@/components/ui/loader-spokes";
 import {
   ActivityFeed,
   buildActivitySteps,
@@ -192,7 +192,7 @@ function ResearchArtifactBody({
   if (isLoading || !meta.loaded) {
     return (
       <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
-        <Loader2Icon className="mr-2 size-4 animate-spin" />
+        <Spokes aria-label="Loading" className="mr-2 size-4" />
         Loading research…
       </div>
     );

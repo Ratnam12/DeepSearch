@@ -17,9 +17,8 @@ import {
   XCircleIcon,
 } from "lucide-react";
 import { useArtifact } from "@/hooks/use-artifact";
-import { BouncingDots } from "@/components/ui/loader-bouncing-dots";
-import { Dots } from "@/components/ui/loader-dots";
-import { PulseDot } from "@/components/ui/loader-pulse-dot";
+import { DotsRing } from "@/components/ui/loader-dots-ring";
+import { Spokes } from "@/components/ui/loader-spokes";
 import { Wave } from "@/components/ui/loader-wave";
 import {
   type Dispatch,
@@ -529,7 +528,7 @@ export function ResearchArtifactCard({
   if (!run) {
     return (
       <div className="flex h-[88px] items-center gap-2 rounded-xl border border-border/60 bg-card px-4 text-muted-foreground text-sm">
-        <Dots aria-label="Loading" className="h-1.5 w-6 text-muted-foreground" />
+        <Spokes aria-label="Loading" className="size-3.5" />
         Loading research…
       </div>
     );
@@ -682,17 +681,18 @@ function ResearchPreviewCard({
             ) : (
               <span className="flex items-center gap-1.5 text-muted-foreground">
                 {/* Wave when writing — vertical bars visually echo
-                    "building output" rhythm; PulseDot for the calmer
-                    search/read phases. */}
+                    "building output" rhythm; DotsRing during the
+                    search/read phases — the orbital pulse reads as
+                    the agent "scanning". */}
                 {isWriting ? (
                   <Wave
                     aria-label="Writing"
                     className="h-3 w-4 text-muted-foreground"
                   />
                 ) : (
-                  <PulseDot
+                  <DotsRing
                     aria-label="Researching"
-                    className="size-1.5 text-primary"
+                    className="size-3.5 text-primary"
                   />
                 )}
                 <span className="truncate">{liveLine}</span>
@@ -956,7 +956,7 @@ export function ActivityFeed({
   if (steps.length === 0) {
     return (
       <p className="mt-3 flex items-center gap-2 text-[13px] text-muted-foreground">
-        <Dots aria-label="Loading" className="h-1.5 w-6 text-muted-foreground" />
+        <Spokes aria-label="Loading" className="size-3.5" />
         {status === "queued"
           ? "Waiting for the research worker to pick this up…"
           : "Getting started…"}
@@ -997,10 +997,7 @@ function ActivityStepRow({
           )}
         >
           {showTrailingPulse ? (
-            <BouncingDots
-              aria-label="Working"
-              className="h-1.5 w-3.5 text-current"
-            />
+            <Spokes aria-label="Working" className="size-3 text-current" />
           ) : (
             <Icon className="size-3" />
           )}
