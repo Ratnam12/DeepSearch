@@ -240,6 +240,49 @@ export function ResearchArtifactCard({
     return () => clearTimeout(timer);
   }, [run, events.length]);
 
+  // ── Terminal-state report ensure ─────────────────────────────────────
+  // When the run flips to a terminal state, the SSE useEffect below
+  // tears down (its cleanup sets `cancelled = true`). Any in-flight
+  // refreshSnapshot() triggered by `report_written` earlier in the
+  // same SSE batch silently bails on return — leaving `report` null.
+  // Result: the inline card shows "Research complete" (status is
+  // done) but a click falls through to the side sheet because
+  // `onCardClick` checks `isDone && report` and report is missing.
+  // This effect lives outside the SSE lifecycle so its fetch can't
+  // be cancelled by the terminal flip.
+  useEffect(() => {
+    if (!run) return;
+    if (!TERMINAL_STATUSES.has(run.status)) return;
+    if (report) return;
+    let cancelled = false;
+    void fetch(`/api/research/${run.id}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((snap) => {
+        if (cancelled || !snap) return;
+        if (snap.run) setRun(snap.run);
+        if (snap.plan) setPlan(snap.plan);
+        if (snap.report) setReport(snap.report);
+        if (Array.isArray(snap.sources)) setSources(snap.sources);
+        if (Array.isArray(snap.subagents)) {
+          setSubagents(
+            Object.fromEntries(
+              (snap.subagents as ResearchSubagent[]).map((sa) => [
+                sa.id,
+                subagentFromRow(sa),
+              ])
+            )
+          );
+        }
+        if (Array.isArray(snap.events) && snap.events.length > 0) {
+          setEvents(snap.events);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [run?.id, run?.status, report]);
+
   // ── Live SSE subscription ────────────────────────────────────────────
   const isTerminal = run ? TERMINAL_STATUSES.has(run.status) : false;
   useEffect(() => {
