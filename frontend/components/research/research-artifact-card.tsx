@@ -3,14 +3,18 @@
 import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertTriangleIcon,
+  ArrowUpRightIcon,
+  CheckCircle2Icon,
   CopyIcon,
   DownloadIcon,
   ExternalLinkIcon,
+  FileTextIcon,
+  GlobeIcon,
   Loader2Icon,
-  MaximizeIcon,
-  PlusIcon,
+  SearchIcon,
+  SparklesIcon,
   TelescopeIcon,
-  XIcon,
+  XCircleIcon,
 } from "lucide-react";
 import {
   type Dispatch,
@@ -32,7 +36,6 @@ import {
 } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import type {
-  ResearchOutlineSection,
   ResearchPlan,
   ResearchReport,
   ResearchRun,
@@ -41,49 +44,19 @@ import type {
   ResearchSubQuestion,
 } from "@/lib/db/schema";
 
-// Animation language matches DeepSearchToolGroup: 0.2s with the same
-// out-cubic easing curve, height + opacity + small Y offset on
-// expand/collapse, fade + scale-in for newly-mounted cards.
-const EASE: [number, number, number, number] = [0.22, 1, 0.36, 1];
-const FADE_UP = {
-  initial: { opacity: 0, y: 4 },
-  animate: { opacity: 1, y: 0 },
-  exit: { opacity: 0, y: -4 },
-  transition: { duration: 0.2, ease: EASE },
-};
-const COLLAPSE = {
-  initial: { height: 0, opacity: 0, y: -4 },
-  animate: { height: "auto" as const, opacity: 1, y: 0 },
-  exit: { height: 0, opacity: 0, y: -4 },
-  transition: { duration: 0.2, ease: EASE },
-};
-
 // In-chat artifact for a deep-research run.
 //
-// Rendered when the chat message contains a ``data-research`` part —
-// the chat thread becomes the home for research, the way OpenAI does
-// it. Compact while running, full report inline once done. Clicking
-// "Show progress" opens a side Sheet with the live timeline + plan +
-// sub-agent details for users who want to watch the work in flight.
-//
-// Self-contained: takes only ``runId`` + ``query`` from the message
-// part and pulls everything else (run row, plan, sub-agents, sources,
-// report, events) directly from the API. That means the parent
-// message component doesn't have to know anything about research.
+// One compact, fixed-height card in the chat. Hover lifts it; click
+// opens a side sheet with the full activity feed + final report.
+// All variable-height detail (sub-question rows, source cards, the
+// report itself) lives in the sheet so the chat doesn't re-flow as
+// the run progresses. The sheet's activity feed is OpenAI Deep
+// Research-style — natural-language steps with favicon source
+// cards, no agent jargon.
 
 const TERMINAL_STATUSES = new Set(["done", "failed", "cancelled"]);
 
-const STATUS_LABELS: Record<string, string> = {
-  queued: "Queued",
-  scoping: "Scoping",
-  planning: "Planning",
-  awaiting_approval: "Awaiting your approval",
-  researching: "Researching",
-  writing: "Writing report",
-  done: "Done",
-  failed: "Failed",
-  cancelled: "Cancelled",
-};
+const EASE: [number, number, number, number] = [0.22, 1, 0.36, 1];
 
 type StreamEvent = {
   seq: number;
@@ -98,8 +71,6 @@ type SubagentLive = {
   status: "running" | "done" | "failed";
   findingMd: string | null;
   sourceCount: number | null;
-  latestAction: string | null;
-  latestActionDetail: string | null;
   model: string | null;
   stub: boolean;
 };
@@ -124,12 +95,57 @@ function subagentFromRow(row: ResearchSubagent): SubagentLive {
     status,
     findingMd: row.findingMd,
     sourceCount: sources.length || null,
-    latestAction: null,
-    latestActionDetail: null,
     model: row.model,
     stub: false,
   };
 }
+
+// ── Activity-feed types ─────────────────────────────────────────────────
+
+type SearchHit = {
+  title: string;
+  url: string;
+  host: string;
+  snippet: string;
+};
+
+type RetrievedChunk = { host: string; url: string; snippet: string };
+
+type ActivityStep =
+  | {
+      kind: "phase";
+      ts: string;
+      label: string;
+      icon: "spark" | "globe" | "file" | "check";
+    }
+  | { kind: "task"; ts: string; subQuestion: string }
+  | {
+      kind: "search";
+      ts: string;
+      subQuestion: string | null;
+      query: string;
+      results: SearchHit[];
+    }
+  | {
+      kind: "read";
+      ts: string;
+      subQuestion: string | null;
+      url: string;
+      host: string;
+      ok: boolean;
+      chunks: number | null;
+    }
+  | {
+      kind: "retrieve";
+      ts: string;
+      subQuestion: string | null;
+      query: string;
+      chunks: RetrievedChunk[];
+    };
+
+// ────────────────────────────────────────────────────────────────────────
+// Top-level component
+// ────────────────────────────────────────────────────────────────────────
 
 export function ResearchArtifactCard({
   runId,
@@ -164,7 +180,7 @@ export function ResearchArtifactCard({
             setLoadError(
               res.status === 404
                 ? "This research run was deleted."
-                : `Couldn't load research run (${res.status}).`
+                : `Couldn't load research (${res.status}).`
             );
           }
           return;
@@ -189,7 +205,7 @@ export function ResearchArtifactCard({
       } catch (err) {
         if (!cancelled) {
           setLoadError(
-            err instanceof Error ? err.message : "Failed to load research run"
+            err instanceof Error ? err.message : "Failed to load research"
           );
         }
       }
@@ -200,11 +216,6 @@ export function ResearchArtifactCard({
   }, [runId]);
 
   // ── Worker-offline probe ─────────────────────────────────────────────
-  // If the run sits in 'queued' for more than 12 seconds with zero
-  // events, ping the backend's worker-status endpoint. If the worker
-  // crashed (e.g. DATABASE_URL missing on Railway) we surface that
-  // state in the card so the user gets an honest signal instead of
-  // the optimistic "Waiting for the worker…" forever.
   useEffect(() => {
     if (!run) return;
     if (run.status !== "queued") return;
@@ -266,7 +277,7 @@ export function ResearchArtifactCard({
           );
         }
       } catch {
-        // ignore unparseable events
+        // ignore
       }
     };
 
@@ -298,33 +309,10 @@ export function ResearchArtifactCard({
               status: "running",
               findingMd: null,
               sourceCount: null,
-              latestAction: null,
-              latestActionDetail: null,
               model: typeof model === "string" ? model : null,
               stub: Boolean(evt.payload.stub),
             },
           }));
-          break;
-        }
-        case "subagent_progress": {
-          const id = evt.payload.id;
-          const action = evt.payload.action;
-          const detail = evt.payload.detail;
-          if (typeof id !== "string") break;
-          setSubagents((prev) => {
-            const cur = prev[id];
-            if (!cur) return prev;
-            return {
-              ...prev,
-              [id]: {
-                ...cur,
-                latestAction:
-                  typeof action === "string" ? action : cur.latestAction,
-                latestActionDetail:
-                  typeof detail === "string" ? detail : cur.latestActionDetail,
-              },
-            };
-          });
           break;
         }
         case "subagent_finished": {
@@ -347,8 +335,6 @@ export function ResearchArtifactCard({
               findingMd: typeof finding === "string" ? finding : null,
               sourceCount:
                 typeof sourceCount === "number" ? sourceCount : null,
-              latestAction: null,
-              latestActionDetail: null,
               model: prev[id]?.model ?? null,
               stub: prev[id]?.stub ?? false,
             },
@@ -424,42 +410,39 @@ export function ResearchArtifactCard({
     });
   }, [subagents, plan?.subQuestions]);
 
-  const completedSubagents = subagentList.filter((s) => s.status === "done").length;
-  const totalSubagents = subagentList.length || 0;
-  const sourceCount = sources.length;
   const status = run?.status ?? "queued";
-  const statusLabel = STATUS_LABELS[status] ?? status;
   const isDone = status === "done";
   const isFailed = status === "failed";
   const isCancelled = status === "cancelled";
 
-  // ── Actions ──────────────────────────────────────────────────────────
-  const onApprovePlan = useCallback(
-    async (edits?: {
-      subQuestions: ResearchSubQuestion[];
-      outline: ResearchOutlineSection[];
-    }) => {
-      if (!plan) return;
-      try {
-        const res = await fetch(`/api/research/${runId}/plan`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(edits ?? {}),
-        });
-        if (!res.ok) {
-          toast.error(
-            (await res.text()) || "Couldn't approve plan, try again."
-          );
-        }
-      } catch (err) {
-        toast.error(
-          err instanceof Error ? err.message : "Network error approving plan"
-        );
-      }
-    },
-    [plan, runId]
+  const activitySteps = useMemo<ActivityStep[]>(
+    () => buildActivitySteps(events, subagentList),
+    [events, subagentList]
   );
 
+  const liveLine = useMemo(
+    () => deriveLiveLine(status, activitySteps),
+    [status, activitySteps]
+  );
+
+  const reportPreview = useMemo(
+    () => (report ? extractReportPreview(report.markdown) : null),
+    [report]
+  );
+
+  const elapsedLabel = useMemo(() => {
+    if (!run) return null;
+    const started = run.startedAt ? new Date(run.startedAt).getTime() : null;
+    const ended = run.finishedAt
+      ? new Date(run.finishedAt).getTime()
+      : null;
+    if (!started || !ended) return null;
+    const sec = Math.max(1, Math.round((ended - started) / 1000));
+    if (sec < 60) return `${sec}s`;
+    return `${Math.round(sec / 60)}m`;
+  }, [run]);
+
+  // ── Actions ──────────────────────────────────────────────────────────
   const onCancel = useCallback(async () => {
     if (!run || TERMINAL_STATUSES.has(run.status)) return;
     try {
@@ -478,8 +461,8 @@ export function ResearchArtifactCard({
     if (!report) return;
     void navigator.clipboard
       .writeText(report.markdown)
-      .then(() => toast.success("Report markdown copied"))
-      .catch(() => toast.error("Couldn't copy to clipboard"));
+      .then(() => toast.success("Report copied"))
+      .catch(() => toast.error("Couldn't copy"));
   }, [report]);
 
   const onDownload = useCallback(() => {
@@ -498,57 +481,22 @@ export function ResearchArtifactCard({
   // ── Render ───────────────────────────────────────────────────────────
   if (loadError) {
     return (
-      <motion.div
-        animate={FADE_UP.animate}
-        className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-destructive text-sm"
-        initial={FADE_UP.initial}
-        transition={FADE_UP.transition}
-      >
-        <p className="font-medium">Couldn&apos;t load research run</p>
-        <p className="text-xs">{loadError}</p>
-      </motion.div>
+      <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-destructive text-sm">
+        <p className="font-medium">Couldn&apos;t load research</p>
+        <p className="text-xs opacity-80">{loadError}</p>
+      </div>
     );
   }
 
-  // While the snapshot is loading, show a stub so the chat doesn't reflow.
   if (!run) {
     return (
-      <motion.div
-        animate={FADE_UP.animate}
-        className="flex items-center gap-2 rounded-lg border border-border bg-card p-3 text-muted-foreground text-sm"
-        initial={FADE_UP.initial}
-        transition={FADE_UP.transition}
-      >
+      <div className="flex h-[88px] items-center gap-2 rounded-xl border border-border/60 bg-card px-4 text-muted-foreground text-sm">
         <Loader2Icon className="size-3.5 animate-spin" />
-        Loading research run…
-      </motion.div>
+        Loading research…
+      </div>
     );
   }
 
-  // Done state: render the report inline. The artifact becomes the
-  // report once research is complete — chat continues underneath.
-  if (isDone && report) {
-    return (
-      <DoneState
-        events={events}
-        onCopy={onCopy}
-        onDownload={onDownload}
-        onOpenSheet={() => setSheetOpen(true)}
-        query={query}
-        report={report}
-        sheetOpen={sheetOpen}
-        setSheetOpen={setSheetOpen}
-        sources={sources}
-        subagentList={subagentList}
-        plan={plan}
-      />
-    );
-  }
-
-  // Running / blocked / terminal-non-done states: compact card with a
-  // status header, a brief progress line, an inline plan-approval card
-  // (only when status='awaiting_approval'), and a "Show progress"
-  // button that opens the full sheet.
   const workerOffline =
     workerStatus !== null &&
     workerStatus.configured === true &&
@@ -556,688 +504,629 @@ export function ResearchArtifactCard({
 
   return (
     <>
-      <motion.div
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        className="rounded-lg border border-border bg-card overflow-hidden"
-        initial={{ opacity: 0, y: 6, scale: 0.985 }}
-        transition={{ duration: 0.25, ease: EASE }}
-      >
-        <div className="flex items-start gap-3 p-4">
-          <div
-            className={cn(
-              "flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary",
-              !isFailed && !isCancelled && "animate-pulse"
-            )}
-          >
-            <TelescopeIcon className="size-4" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center justify-between gap-2">
-              <p className="font-medium text-sm">Research</p>
-              <RunningBadge
-                status={status}
-                isFailed={isFailed}
-                isCancelled={isCancelled}
-                statusLabel={statusLabel}
-              />
-            </div>
-            <p className="mt-1 line-clamp-2 text-muted-foreground text-xs leading-snug">
-              {query}
-            </p>
-            <AnimatePresence initial={false} mode="wait">
-              <motion.div
-                animate={FADE_UP.animate}
-                exit={FADE_UP.exit}
-                initial={FADE_UP.initial}
-                key={status}
-                transition={FADE_UP.transition}
-              >
-                <ProgressLine
-                  completedSubagents={completedSubagents}
-                  sourceCount={sourceCount}
-                  status={status}
-                  totalSubagents={totalSubagents}
-                />
-              </motion.div>
-            </AnimatePresence>
-
-            {workerOffline && (
-              <WorkerOfflineNotice status={workerStatus} />
-            )}
-          </div>
-        </div>
-
-        <AnimatePresence initial={false}>
-          {plan && status === "awaiting_approval" && (
-            <motion.div
-              animate={COLLAPSE.animate}
-              exit={COLLAPSE.exit}
-              initial={COLLAPSE.initial}
-              key={`plan-${plan.runId}-${plan.version}`}
-              style={{ overflow: "hidden" }}
-              transition={COLLAPSE.transition}
-            >
-              <PlanApprovalCard
-                events={events}
-                initialOutline={
-                  (Array.isArray(plan.outline)
-                    ? (plan.outline as ResearchOutlineSection[])
-                    : []) ?? []
-                }
-                initialSubQuestions={
-                  (Array.isArray(plan.subQuestions)
-                    ? (plan.subQuestions as ResearchSubQuestion[])
-                    : []) ?? []
-                }
-                onApprove={onApprovePlan}
-                plan={plan}
-              />
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        <AnimatePresence initial={false}>
-          {(status === "researching" || status === "writing") &&
-            (subagentList.length > 0 || events.length > 0) && (
-              <motion.div
-                animate={COLLAPSE.animate}
-                exit={COLLAPSE.exit}
-                initial={COLLAPSE.initial}
-                style={{ overflow: "hidden" }}
-                transition={COLLAPSE.transition}
-              >
-                <InlineLiveTimeline
-                  events={events}
-                  subagentList={subagentList}
-                />
-              </motion.div>
-            )}
-        </AnimatePresence>
-
-        <div className="flex items-center justify-between border-border/60 border-t bg-muted/30 px-3 py-2">
-          <Button
-            className="h-7 gap-1.5 px-2 text-[12px]"
-            onClick={() => setSheetOpen(true)}
-            size="sm"
-            variant="ghost"
-          >
-            <MaximizeIcon className="size-3" />
-            Show progress
-          </Button>
-          {!isFailed && !isCancelled && (
-            <Button
-              className="h-7 px-2 text-[12px]"
-              onClick={onCancel}
-              size="sm"
-              variant="ghost"
-            >
-              Cancel
-            </Button>
-          )}
-        </div>
-      </motion.div>
-
-      <ProgressSheet
-        events={events}
-        onApprovePlan={onApprovePlan}
-        onCancel={onCancel}
-        open={sheetOpen}
-        plan={plan}
-        run={run}
-        setOpen={setSheetOpen}
-        sources={sources}
-        subagentList={subagentList}
-      />
-    </>
-  );
-}
-
-// ── Worker-offline notice ───────────────────────────────────────────────
-
-
-function WorkerOfflineNotice({ status }: { status: WorkerStatus }) {
-  const detail = status.error?.toLowerCase() ?? "";
-  const hint = detail.includes("database_url")
-    ? "Set DATABASE_URL in your Railway env vars and redeploy."
-    : detail.includes("cannot reach backend")
-    ? "Backend service is unreachable from the frontend."
-    : null;
-  return (
-    <motion.div
-      animate={FADE_UP.animate}
-      className="mt-3 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-amber-700 text-xs dark:text-amber-400"
-      initial={FADE_UP.initial}
-      transition={FADE_UP.transition}
-    >
-      <AlertTriangleIcon className="size-3.5 shrink-0" />
-      <div className="min-w-0">
-        <p className="font-medium">Research worker is offline</p>
-        {status.error ? (
-          <p className="mt-0.5 break-all opacity-90">{status.error}</p>
-        ) : null}
-        {hint ? <p className="mt-1 opacity-80">{hint}</p> : null}
-      </div>
-    </motion.div>
-  );
-}
-
-// ── Inline live timeline (last few events with fade-in) ─────────────────
-
-
-function InlineLiveTimeline({
-  events,
-  subagentList,
-}: {
-  events: StreamEvent[];
-  subagentList: SubagentLive[];
-}) {
-  // Derive a friendlier "current activity" line by combining
-  // sub-agent latest actions and the most recent event type. This
-  // gives the user something to read while research runs without
-  // them having to open the sheet.
-  const recentEvents = useMemo(() => events.slice(-5), [events]);
-  const runningSubagents = subagentList.filter((s) => s.status === "running");
-
-  return (
-    <div className="border-border/60 border-t bg-muted/15 px-4 py-3">
-      <div className="flex items-center gap-2">
-        <PulsingDot />
-        <span className="font-medium text-[11px] text-muted-foreground uppercase tracking-wide">
-          Live progress
-        </span>
-      </div>
-
-      {runningSubagents.length > 0 && (
-        <div className="mt-2 space-y-1.5">
-          {runningSubagents.slice(0, 3).map((sa) => (
-            <motion.div
-              animate={{ opacity: 1, x: 0 }}
-              className="flex items-start gap-2 text-xs"
-              initial={{ opacity: 0, x: -6 }}
-              key={sa.id}
-              transition={{ duration: 0.2, ease: EASE }}
-            >
-              <Loader2Icon className="mt-0.5 size-3 shrink-0 animate-spin text-primary" />
-              <div className="min-w-0">
-                <span className="line-clamp-1 font-medium text-foreground/90">
-                  {sa.subQuestion}
-                </span>
-                {sa.latestAction && (
-                  <span className="line-clamp-1 text-[11px] text-muted-foreground">
-                    {sa.latestAction}
-                    {sa.latestActionDetail ? `: ${sa.latestActionDetail}` : ""}
-                  </span>
-                )}
-              </div>
-            </motion.div>
-          ))}
-        </div>
-      )}
-
-      {recentEvents.length > 0 && (
-        <ol className="mt-2 space-y-0.5 border-border/40 border-l pl-2.5">
-          <AnimatePresence initial={false}>
-            {recentEvents.map((evt) => (
-              <motion.li
-                animate={{ opacity: 1, x: 0 }}
-                className="flex items-center gap-2 text-[11px] text-muted-foreground"
-                exit={{ opacity: 0 }}
-                initial={{ opacity: 0, x: -4 }}
-                key={evt.seq}
-                transition={{ duration: 0.18, ease: EASE }}
-              >
-                <span className="size-1 shrink-0 rounded-full bg-muted-foreground/40" />
-                <span className="truncate">{prettyType(evt.type)}</span>
-              </motion.li>
-            ))}
-          </AnimatePresence>
-        </ol>
-      )}
-    </div>
-  );
-}
-
-function PulsingDot() {
-  return (
-    <span className="relative flex size-2 items-center justify-center">
-      <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary/60 opacity-60" />
-      <span className="relative inline-flex size-1.5 rounded-full bg-primary" />
-    </span>
-  );
-}
-
-// ── Done state (inline report) ──────────────────────────────────────────
-
-
-function DoneState({
-  events,
-  onCopy,
-  onDownload,
-  onOpenSheet,
-  query,
-  report,
-  sheetOpen,
-  setSheetOpen,
-  sources,
-  subagentList,
-  plan,
-}: {
-  events: StreamEvent[];
-  onCopy: () => void;
-  onDownload: () => void;
-  onOpenSheet: () => void;
-  query: string;
-  report: ResearchReport;
-  sheetOpen: boolean;
-  setSheetOpen: Dispatch<SetStateAction<boolean>>;
-  sources: ResearchSource[];
-  subagentList: SubagentLive[];
-  plan: ResearchPlan | null;
-}) {
-  const writerEvent = useMemo(
-    () => [...events].reverse().find((e) => e.type === "report_written"),
-    [events]
-  );
-  const usedStub = Boolean(writerEvent?.payload?.stub);
-  const writerModel =
-    typeof writerEvent?.payload?.model === "string"
-      ? (writerEvent.payload.model as string)
-      : null;
-
-  return (
-    <>
-      <div className="rounded-lg border border-border bg-card">
-        <header className="flex items-center justify-between gap-3 border-border/60 border-b px-4 py-3">
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-              <TelescopeIcon className="size-3.5" />
-            </div>
-            <span className="font-medium text-sm">Research report</span>
-            {writerModel && !usedStub && (
-              <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                {writerModel}
-              </span>
-            )}
-            {usedStub && (
-              <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-700 dark:text-amber-400">
-                stub report
-              </span>
-            )}
-          </div>
-          <div className="flex items-center gap-1">
-            <Button
-              className="h-7 gap-1.5 px-2 text-[11px]"
-              onClick={onCopy}
-              size="sm"
-              variant="ghost"
-            >
-              <CopyIcon className="size-3" />
-              Copy
-            </Button>
-            <Button
-              className="h-7 gap-1.5 px-2 text-[11px]"
-              onClick={onDownload}
-              size="sm"
-              variant="ghost"
-            >
-              <DownloadIcon className="size-3" />
-              Download
-            </Button>
-            <Button
-              className="h-7 gap-1.5 px-2 text-[11px]"
-              onClick={onOpenSheet}
-              size="sm"
-              variant="ghost"
-            >
-              <MaximizeIcon className="size-3" />
-              Open
-            </Button>
-          </div>
-        </header>
-
-        <div className="p-5">
-          <ResearchReportRenderer citations={sources} markdown={report.markdown} />
-        </div>
-
-        {sources.length > 0 && (
-          <div className="border-border/60 border-t px-5 py-4">
-            <SourcesList sources={sources} />
-          </div>
-        )}
-      </div>
-
-      <ProgressSheet
-        events={events}
-        onApprovePlan={async () => undefined}
-        onCancel={async () => undefined}
-        open={sheetOpen}
-        plan={plan}
-        run={null}
-        setOpen={setSheetOpen}
-        sources={sources}
-        subagentList={subagentList}
-        // Pass the report so the sheet can also show it.
-        report={report}
+      <ResearchPreviewCard
+        elapsedLabel={elapsedLabel}
+        isCancelled={isCancelled}
+        isDone={isDone}
+        isFailed={isFailed}
+        liveLine={liveLine}
+        onOpen={() => setSheetOpen(true)}
         query={query}
+        reportPreview={reportPreview}
+        sourceCount={sources.length}
+        workerOffline={workerOffline ? workerStatus : null}
+      />
+
+      <ResearchSheet
+        activitySteps={activitySteps}
+        elapsedLabel={elapsedLabel}
+        isCancelled={isCancelled}
+        isDone={isDone}
+        isFailed={isFailed}
+        onCancel={onCancel}
+        onCopy={onCopy}
+        onDownload={onDownload}
+        open={sheetOpen}
+        query={query}
+        report={report}
+        setOpen={setSheetOpen}
+        sources={sources}
+        status={status}
+        workerOffline={workerOffline ? workerStatus : null}
       />
     </>
   );
 }
 
-// ── Compact bits ────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────
+// In-chat preview card
+// ────────────────────────────────────────────────────────────────────────
 
-
-function RunningBadge({
-  status,
-  isFailed,
+function ResearchPreviewCard({
+  elapsedLabel,
   isCancelled,
-  statusLabel,
+  isDone,
+  isFailed,
+  liveLine,
+  onOpen,
+  query,
+  reportPreview,
+  sourceCount,
+  workerOffline,
 }: {
-  status: string;
-  isFailed: boolean;
+  elapsedLabel: string | null;
   isCancelled: boolean;
-  statusLabel: string;
+  isDone: boolean;
+  isFailed: boolean;
+  liveLine: string;
+  onOpen: () => void;
+  query: string;
+  reportPreview: string | null;
+  sourceCount: number;
+  workerOffline: WorkerStatus | null;
+}) {
+  const headline = isDone
+    ? "Research complete"
+    : isFailed
+    ? "Couldn't finish this research"
+    : isCancelled
+    ? "Research cancelled"
+    : "Researching";
+
+  const meta = isDone
+    ? [
+        sourceCount > 0
+          ? `${sourceCount} source${sourceCount === 1 ? "" : "s"}`
+          : null,
+        elapsedLabel,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : null;
+
+  return (
+    <motion.button
+      animate={{ opacity: 1, y: 0 }}
+      aria-label={`Open ${headline.toLowerCase()}`}
+      className={cn(
+        "group relative w-full max-w-[640px] cursor-pointer overflow-hidden rounded-xl border bg-card text-left",
+        "transition-[transform,box-shadow,border-color] duration-200 ease-out",
+        "hover:-translate-y-0.5 hover:shadow-lg hover:shadow-black/[0.06]",
+        isFailed
+          ? "border-destructive/30 hover:border-destructive/50"
+          : isDone
+          ? "border-emerald-500/25 hover:border-emerald-500/50 dark:border-emerald-400/20 dark:hover:border-emerald-400/40"
+          : "border-border/70 hover:border-primary/40"
+      )}
+      initial={{ opacity: 0, y: 4 }}
+      onClick={onOpen}
+      transition={{ duration: 0.2, ease: EASE }}
+      type="button"
+    >
+      <div className="flex items-start gap-3 p-4">
+        <PreviewIcon
+          isCancelled={isCancelled}
+          isDone={isDone}
+          isFailed={isFailed}
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-2">
+            <p className="truncate font-medium text-[13.5px] text-foreground">
+              {headline}
+              {meta && (
+                <span className="ml-1.5 font-normal text-[12px] text-muted-foreground">
+                  · {meta}
+                </span>
+              )}
+            </p>
+            <ArrowUpRightIcon
+              aria-hidden
+              className="size-3.5 shrink-0 text-muted-foreground/40 transition-colors group-hover:text-foreground/70"
+            />
+          </div>
+          <p className="mt-1 line-clamp-2 text-[12.5px] text-muted-foreground leading-snug">
+            {query}
+          </p>
+          <div className="mt-2.5 min-h-[32px] text-[11.5px] leading-snug">
+            {isDone && reportPreview ? (
+              <span className="line-clamp-2 text-foreground/75">
+                {reportPreview}
+              </span>
+            ) : isFailed || isCancelled ? (
+              <span className="text-muted-foreground/70">
+                {isFailed
+                  ? "Open to see what went wrong."
+                  : "You stopped this run."}
+              </span>
+            ) : (
+              <span className="flex items-center gap-1.5 text-muted-foreground">
+                <PulsingDot />
+                <span className="truncate">{liveLine}</span>
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+      {workerOffline && <WorkerOfflineNotice compact status={workerOffline} />}
+    </motion.button>
+  );
+}
+
+function PreviewIcon({
+  isCancelled,
+  isDone,
+  isFailed,
+}: {
+  isCancelled: boolean;
+  isDone: boolean;
+  isFailed: boolean;
 }) {
   if (isFailed) {
     return (
-      <span className="shrink-0 rounded-full bg-destructive/10 px-2 py-0.5 font-medium text-[11px] text-destructive">
-        Failed
+      <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-destructive/10 text-destructive">
+        <XCircleIcon className="size-4" />
       </span>
     );
   }
   if (isCancelled) {
     return (
-      <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 font-medium text-[11px] text-muted-foreground">
-        Cancelled
+      <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+        <XCircleIcon className="size-4" />
+      </span>
+    );
+  }
+  if (isDone) {
+    return (
+      <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+        <CheckCircle2Icon className="size-4" />
       </span>
     );
   }
   return (
-    <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-primary/10 px-2 py-0.5 font-medium text-[11px] text-primary">
-      <Loader2Icon className="size-3 animate-spin" />
-      {statusLabel}
+    <span className="relative flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+      <TelescopeIcon className="size-4" />
+      <span className="-bottom-0.5 -right-0.5 absolute size-2 rounded-full bg-primary">
+        <span className="absolute inset-0 animate-ping rounded-full bg-primary/60" />
+      </span>
     </span>
   );
 }
 
-function ProgressLine({
+function PulsingDot() {
+  return (
+    <span className="relative inline-flex size-2 items-center justify-center">
+      <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary/50 opacity-60" />
+      <span className="relative inline-flex size-1.5 rounded-full bg-primary" />
+    </span>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Side sheet (full activity feed + report)
+// ────────────────────────────────────────────────────────────────────────
+
+function ResearchSheet({
+  activitySteps,
+  elapsedLabel,
+  isCancelled,
+  isDone,
+  isFailed,
+  onCancel,
+  onCopy,
+  onDownload,
+  open,
+  query,
+  report,
+  setOpen,
+  sources,
   status,
-  completedSubagents,
-  totalSubagents,
-  sourceCount,
+  workerOffline,
 }: {
+  activitySteps: ActivityStep[];
+  elapsedLabel: string | null;
+  isCancelled: boolean;
+  isDone: boolean;
+  isFailed: boolean;
+  onCancel: () => Promise<void> | void;
+  onCopy: () => void;
+  onDownload: () => void;
+  open: boolean;
+  query: string;
+  report: ResearchReport | null;
+  setOpen: Dispatch<SetStateAction<boolean>>;
+  sources: ResearchSource[];
   status: string;
-  completedSubagents: number;
-  totalSubagents: number;
-  sourceCount: number;
+  workerOffline: WorkerStatus | null;
 }) {
-  if (status === "queued") {
+  const [activityOpen, setActivityOpen] = useState(!isDone);
+  useEffect(() => {
+    if (isDone) setActivityOpen(false);
+  }, [isDone]);
+
+  const headline = isDone
+    ? "Research complete"
+    : isFailed
+    ? "Couldn't finish this research"
+    : isCancelled
+    ? "Research cancelled"
+    : "Researching";
+
+  return (
+    <Sheet onOpenChange={setOpen} open={open}>
+      <SheetContent
+        className="flex w-full flex-col gap-0 p-0 sm:max-w-[760px]"
+        side="right"
+      >
+        <SheetHeader className="space-y-3 border-border border-b px-6 py-5">
+          <div className="flex items-center justify-between gap-3">
+            <SheetTitle className="flex items-center gap-2 text-[15px]">
+              <PreviewIcon
+                isCancelled={isCancelled}
+                isDone={isDone}
+                isFailed={isFailed}
+              />
+              <span>{headline}</span>
+              {elapsedLabel && (
+                <span className="font-normal text-muted-foreground text-xs">
+                  · {elapsedLabel}
+                </span>
+              )}
+            </SheetTitle>
+            {isDone && report && (
+              <div className="flex items-center gap-1">
+                <Button
+                  className="h-8 gap-1.5 px-2.5 text-xs"
+                  onClick={onCopy}
+                  size="sm"
+                  variant="ghost"
+                >
+                  <CopyIcon className="size-3.5" />
+                  Copy
+                </Button>
+                <Button
+                  className="h-8 gap-1.5 px-2.5 text-xs"
+                  onClick={onDownload}
+                  size="sm"
+                  variant="ghost"
+                >
+                  <DownloadIcon className="size-3.5" />
+                  Download
+                </Button>
+              </div>
+            )}
+            {!isDone && !isFailed && !isCancelled && (
+              <Button
+                className="h-8 px-2.5 text-xs"
+                onClick={onCancel}
+                size="sm"
+                variant="ghost"
+              >
+                Stop
+              </Button>
+            )}
+          </div>
+          <p className="text-[13px] text-muted-foreground leading-relaxed">
+            {query}
+          </p>
+        </SheetHeader>
+
+        <div className="flex-1 overflow-y-auto">
+          {workerOffline && (
+            <div className="px-6 pt-5">
+              <WorkerOfflineNotice status={workerOffline} />
+            </div>
+          )}
+
+          {isDone && report && (
+            <section className="px-6 pt-6 pb-4">
+              <ResearchReportRenderer
+                citations={sources}
+                markdown={report.markdown}
+              />
+            </section>
+          )}
+
+          {sources.length > 0 && isDone && (
+            <section className="border-border/60 border-t px-6 py-5">
+              <SourcesList sources={sources} />
+            </section>
+          )}
+
+          <section
+            className={cn(
+              "px-6 py-5",
+              isDone && "border-border/60 border-t bg-muted/15"
+            )}
+          >
+            <button
+              aria-expanded={activityOpen}
+              className="-mx-1 flex w-full items-center justify-between rounded-md px-1 py-1 text-left transition-colors hover:bg-muted/40"
+              onClick={() => setActivityOpen((v) => !v)}
+              type="button"
+            >
+              <h3 className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.08em]">
+                {isDone ? "How this report was researched" : "Activity"}
+              </h3>
+              <span className="text-[11px] text-muted-foreground">
+                {activitySteps.length} step
+                {activitySteps.length === 1 ? "" : "s"}
+                {activityOpen ? " · hide" : " · show"}
+              </span>
+            </button>
+            <AnimatePresence initial={false}>
+              {activityOpen && (
+                <motion.div
+                  animate={{ height: "auto", opacity: 1 }}
+                  className="overflow-hidden"
+                  exit={{ height: 0, opacity: 0 }}
+                  initial={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.18, ease: EASE }}
+                >
+                  <ActivityFeed
+                    inProgress={!isDone && !isFailed && !isCancelled}
+                    status={status}
+                    steps={activitySteps}
+                  />
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </section>
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Activity feed
+// ────────────────────────────────────────────────────────────────────────
+
+function ActivityFeed({
+  inProgress,
+  status,
+  steps,
+}: {
+  inProgress: boolean;
+  status: string;
+  steps: ActivityStep[];
+}) {
+  if (steps.length === 0) {
     return (
-      <p className="mt-2 text-muted-foreground text-[11px]">
-        Waiting for the worker to pick up this run…
+      <p className="mt-3 flex items-center gap-2 text-[13px] text-muted-foreground">
+        <Loader2Icon className="size-3.5 animate-spin" />
+        {status === "queued"
+          ? "Waiting for the research worker to pick this up…"
+          : "Getting started…"}
       </p>
     );
   }
-  if (status === "scoping" || status === "planning") {
+  return (
+    <ol className="mt-3 space-y-3">
+      {steps.map((step, i) => (
+        <ActivityStepRow
+          isLast={i === steps.length - 1}
+          key={`${step.kind}-${step.ts}-${i}`}
+          showTrailingPulse={inProgress && i === steps.length - 1}
+          step={step}
+        />
+      ))}
+    </ol>
+  );
+}
+
+function ActivityStepRow({
+  isLast,
+  showTrailingPulse,
+  step,
+}: {
+  isLast: boolean;
+  showTrailingPulse: boolean;
+  step: ActivityStep;
+}) {
+  const Icon = stepIcon(step);
+  return (
+    <li className="relative flex gap-3">
+      <div className="relative flex flex-col items-center">
+        <span
+          className={cn(
+            "flex size-6 shrink-0 items-center justify-center rounded-full border bg-background",
+            stepIconClass(step)
+          )}
+        >
+          {showTrailingPulse ? (
+            <Loader2Icon className="size-3 animate-spin" />
+          ) : (
+            <Icon className="size-3" />
+          )}
+        </span>
+        {!isLast && <span aria-hidden className="mt-1 w-px flex-1 bg-border" />}
+      </div>
+      <div className="min-w-0 flex-1 pb-2">
+        <ActivityStepBody step={step} />
+      </div>
+    </li>
+  );
+}
+
+function ActivityStepBody({ step }: { step: ActivityStep }) {
+  if (step.kind === "phase") {
     return (
-      <p className="mt-2 text-muted-foreground text-[11px]">
-        Drafting a research plan from your query.
+      <p className="font-medium text-[13px] text-foreground/85">{step.label}</p>
+    );
+  }
+  if (step.kind === "task") {
+    return (
+      <p className="font-medium text-[13px] text-foreground/85">
+        Looking into{" "}
+        <span className="text-foreground">{lowerFirst(step.subQuestion)}</span>
       </p>
     );
   }
-  if (status === "awaiting_approval") {
+  if (step.kind === "search") {
     return (
-      <p className="mt-2 text-muted-foreground text-[11px]">
-        Plan ready. Approve below to start research.
-      </p>
-    );
-  }
-  if (status === "researching") {
-    if (totalSubagents > 0) {
-      return (
-        <p className="mt-2 text-muted-foreground text-[11px]">
-          {completedSubagents} of {totalSubagents} sub-agents complete
-          {sourceCount > 0 ? ` · ${sourceCount} source${sourceCount === 1 ? "" : "s"}` : ""}
+      <div className="space-y-2">
+        <p className="text-[13px] text-foreground/85">
+          Searched{" "}
+          <span className="font-medium text-foreground">“{step.query}”</span>
         </p>
-      );
-    }
+        {step.results.length > 0 && <SourceCardList results={step.results} />}
+      </div>
+    );
+  }
+  if (step.kind === "read") {
     return (
-      <p className="mt-2 text-muted-foreground text-[11px]">
-        Spinning up sub-agents…
+      <p className="text-[13px] text-foreground/85">
+        {step.ok ? "Read" : "Tried to read"}{" "}
+        <a
+          className="font-medium text-foreground underline-offset-2 hover:underline"
+          href={step.url}
+          rel="noreferrer"
+          target="_blank"
+        >
+          {step.host || step.url}
+        </a>
+        {step.ok && step.chunks
+          ? ` · ${step.chunks} section${step.chunks === 1 ? "" : "s"} indexed`
+          : ""}
+        {!step.ok && " · couldn't extract content"}
       </p>
     );
   }
-  if (status === "writing") {
+  if (step.kind === "retrieve") {
     return (
-      <p className="mt-2 text-muted-foreground text-[11px]">
-        Writing the final report from sub-agent findings…
-      </p>
+      <div className="space-y-1.5">
+        <p className="text-[13px] text-foreground/85">Pulled relevant excerpts</p>
+        {step.chunks.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {step.chunks.map((c, i) => (
+              <a
+                className="rounded-full border border-border/60 bg-muted/30 px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                href={c.url}
+                key={`${c.url}-${i}`}
+                rel="noreferrer"
+                target="_blank"
+              >
+                {c.host}
+              </a>
+            ))}
+          </div>
+        )}
+      </div>
     );
   }
   return null;
 }
 
-// ── Plan approval (lifted from ResearchRunView, simplified) ────────────
-
-
-function PlanApprovalCard({
-  plan,
-  initialSubQuestions,
-  initialOutline,
-  events,
-  onApprove,
-}: {
-  plan: ResearchPlan;
-  initialSubQuestions: ResearchSubQuestion[];
-  initialOutline: ResearchOutlineSection[];
-  events: StreamEvent[];
-  onApprove: (edits?: {
-    subQuestions: ResearchSubQuestion[];
-    outline: ResearchOutlineSection[];
-  }) => Promise<void> | void;
-}) {
-  const planProposed = useMemo(
-    () => events.find((e) => e.type === "plan_proposed"),
-    [events]
-  );
-  const usedStub = Boolean(planProposed?.payload?.stub);
-  const plannerModel =
-    typeof planProposed?.payload?.model === "string"
-      ? (planProposed.payload.model as string)
-      : null;
-
-  const [draftSubQs, setDraftSubQs] =
-    useState<ResearchSubQuestion[]>(initialSubQuestions);
-  const [draftOutline, setDraftOutline] =
-    useState<ResearchOutlineSection[]>(initialOutline);
-  const [approving, setApproving] = useState(false);
-  const planSig = `${plan.runId}:${plan.version}`;
-  const planSigRef = useRef(planSig);
-  if (planSigRef.current !== planSig) {
-    planSigRef.current = planSig;
-    setDraftSubQs(initialSubQuestions);
-    setDraftOutline(initialOutline);
+function stepIcon(step: ActivityStep) {
+  if (step.kind === "phase") {
+    if (step.icon === "globe") return GlobeIcon;
+    if (step.icon === "file") return FileTextIcon;
+    if (step.icon === "check") return CheckCircle2Icon;
+    return SparklesIcon;
   }
+  if (step.kind === "task") return SparklesIcon;
+  if (step.kind === "search") return SearchIcon;
+  if (step.kind === "read") return GlobeIcon;
+  if (step.kind === "retrieve") return FileTextIcon;
+  return SparklesIcon;
+}
 
-  const dirty = useMemo(() => {
-    if (
-      draftSubQs.length !== initialSubQuestions.length ||
-      draftOutline.length !== initialOutline.length
-    )
-      return true;
-    for (let i = 0; i < draftSubQs.length; i += 1) {
-      const a = draftSubQs[i];
-      const b = initialSubQuestions[i];
-      if (a.id !== b.id || a.question !== b.question || a.rationale !== b.rationale)
-        return true;
-    }
-    for (let i = 0; i < draftOutline.length; i += 1) {
-      const a = draftOutline[i];
-      const b = initialOutline[i];
-      if (a.id !== b.id || a.title !== b.title || a.description !== b.description)
-        return true;
-    }
-    return false;
-  }, [draftSubQs, draftOutline, initialSubQuestions, initialOutline]);
+function stepIconClass(step: ActivityStep): string {
+  if (step.kind === "task") return "border-primary/30 text-primary";
+  return "border-border/70 text-muted-foreground";
+}
 
-  const handleApprove = async () => {
-    const cleanSubQs = draftSubQs
-      .map((q) => ({
-        ...q,
-        question: q.question.trim(),
-        rationale: q.rationale?.trim(),
-      }))
-      .filter((q) => q.question.length > 0);
-    const cleanOutline = draftOutline
-      .map((s) => ({
-        ...s,
-        title: s.title.trim(),
-        description: s.description?.trim(),
-      }))
-      .filter((s) => s.title.length > 0);
-    if (cleanSubQs.length < 1) {
-      toast.error("Add at least one sub-question.");
-      return;
-    }
-    if (cleanOutline.length < 1) {
-      toast.error("Keep at least one outline section.");
-      return;
-    }
-    setApproving(true);
-    try {
-      await onApprove(
-        dirty ? { subQuestions: cleanSubQs, outline: cleanOutline } : undefined
-      );
-    } finally {
-      setApproving(false);
-    }
-  };
-
+function SourceCardList({ results }: { results: SearchHit[] }) {
   return (
-    <div className="border-border/60 border-t bg-muted/20 p-4">
-      <div className="flex items-center gap-2">
-        <span className="font-medium text-sm">Plan</span>
-        {plannerModel && !usedStub && (
-          <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-            {plannerModel}
-          </span>
-        )}
-        {usedStub && (
-          <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-700 dark:text-amber-400">
-            stub plan
-          </span>
-        )}
-      </div>
-      {plan.briefMd && (
-        <p className="mt-2 whitespace-pre-wrap text-foreground/85 text-xs leading-relaxed">
-          {plan.briefMd}
+    <div className="grid gap-1.5">
+      {results.slice(0, 4).map((r) => (
+        <a
+          className={cn(
+            "flex items-start gap-2 rounded-lg border border-border/40 bg-muted/15 px-2.5 py-1.5",
+            "no-underline transition-colors hover:bg-muted/40 hover:border-border/70"
+          )}
+          href={r.url}
+          key={r.url}
+          rel="noopener noreferrer"
+          target="_blank"
+        >
+          <img
+            alt=""
+            className="mt-0.5 size-3.5 shrink-0 rounded-sm"
+            loading="lazy"
+            onError={(e) => {
+              (e.currentTarget as HTMLImageElement).style.display = "none";
+            }}
+            referrerPolicy="no-referrer"
+            src={`https://www.google.com/s2/favicons?domain=${r.host}&sz=32`}
+          />
+          <div className="min-w-0 flex-1">
+            <p className="line-clamp-1 font-medium text-[12.5px] text-foreground/90">
+              {r.title}
+            </p>
+            <p className="line-clamp-1 text-[11px] text-muted-foreground/70">
+              {r.host}
+              {r.snippet ? ` · ${r.snippet}` : ""}
+            </p>
+          </div>
+        </a>
+      ))}
+      {results.length > 4 && (
+        <p className="pl-1 text-[11px] text-muted-foreground/60">
+          +{results.length - 4} more result{results.length - 4 === 1 ? "" : "s"}
         </p>
       )}
-      <div className="mt-3 space-y-2">
-        <p className="font-medium text-muted-foreground text-[10px] uppercase tracking-wide">
-          Sub-questions
-        </p>
-        <ol className="space-y-1.5">
-          {draftSubQs.map((q, idx) => (
-            <li
-              className="grid grid-cols-[16px_1fr_22px] items-start gap-2"
-              key={q.id}
-            >
-              <span className="pt-1 font-medium text-muted-foreground text-[11px]">
-                {idx + 1}.
-              </span>
-              <input
-                className="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs focus-visible:border-primary focus-visible:outline-none"
-                onChange={(e) =>
-                  setDraftSubQs((prev) =>
-                    prev.map((p, i) =>
-                      i === idx ? { ...p, question: e.target.value } : p
-                    )
-                  )
-                }
-                placeholder="Sub-question"
-                type="text"
-                value={q.question}
-              />
-              <button
-                aria-label="Remove sub-question"
-                className="mt-0.5 inline-flex size-5 items-center justify-center rounded text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
-                onClick={() =>
-                  setDraftSubQs((prev) => prev.filter((_, i) => i !== idx))
-                }
-                type="button"
-              >
-                <XIcon className="size-3" />
-              </button>
-            </li>
-          ))}
-        </ol>
-        <button
-          className="inline-flex items-center gap-1 px-1 text-muted-foreground text-[11px] hover:text-foreground"
-          onClick={() => {
-            if (draftSubQs.length >= 8) {
-              toast("Up to 8 sub-questions supported.");
-              return;
-            }
-            const idx = draftSubQs.length + 1;
-            setDraftSubQs((prev) => [
-              ...prev,
-              {
-                id: `sq${idx}-${Math.random().toString(36).slice(2, 6)}`,
-                question: "",
-                rationale: "",
-              },
-            ]);
-          }}
-          type="button"
-        >
-          <PlusIcon className="size-3" />
-          Add
-        </button>
-      </div>
-      <div className="mt-4 flex justify-end">
-        <Button disabled={approving} onClick={handleApprove} size="sm">
-          {approving ? "Approving…" : "Approve & start research"}
-        </Button>
-      </div>
     </div>
   );
 }
 
-// ── Sources list (used by both done state and sheet) ───────────────────
-
+// ────────────────────────────────────────────────────────────────────────
+// Sources list (final, deduped)
+// ────────────────────────────────────────────────────────────────────────
 
 function SourcesList({ sources }: { sources: ResearchSource[] }) {
   return (
     <div>
-      <h3 className="font-semibold text-muted-foreground text-xs uppercase tracking-wide">
+      <h3 className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.08em]">
         Sources ({sources.length})
       </h3>
-      <ol className="mt-2 space-y-1">
+      <ol className="mt-3 grid gap-1.5">
         {sources.map((s) => {
           const domain = domainFor(s.url);
           const label = s.title ?? domain;
           return (
-            <li
-              className="flex items-start gap-2 rounded-md p-1.5 text-sm transition-colors hover:bg-muted/40"
-              key={s.citationNum}
-            >
-              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
-                [{s.citationNum}]
-              </span>
+            <li key={s.citationNum}>
               <a
-                className="group min-w-0 flex-1"
+                className={cn(
+                  "flex items-start gap-2 rounded-lg border border-border/40 bg-muted/10 px-2.5 py-2",
+                  "no-underline transition-colors hover:bg-muted/30 hover:border-border/70"
+                )}
                 href={s.url}
                 rel="noreferrer"
                 target="_blank"
               >
-                <span className="line-clamp-1 font-medium text-foreground group-hover:underline">
-                  {label}
+                <span className="mt-0.5 shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                  {s.citationNum}
                 </span>
-                <span className="line-clamp-1 text-[11px] text-muted-foreground">
-                  {domain}
-                  <ExternalLinkIcon className="ml-1 inline size-3" />
-                </span>
+                <img
+                  alt=""
+                  className="mt-0.5 size-3.5 shrink-0 rounded-sm"
+                  loading="lazy"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).style.display = "none";
+                  }}
+                  referrerPolicy="no-referrer"
+                  src={`https://www.google.com/s2/favicons?domain=${domain}&sz=32`}
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="line-clamp-1 font-medium text-[12.5px] text-foreground/90">
+                    {label}
+                  </p>
+                  <p className="line-clamp-1 text-[11px] text-muted-foreground/70">
+                    {domain}
+                    <ExternalLinkIcon className="ml-1 inline size-3 align-[-1px]" />
+                  </p>
+                </div>
               </a>
             </li>
           );
@@ -1247,193 +1136,235 @@ function SourcesList({ sources }: { sources: ResearchSource[] }) {
   );
 }
 
-// ── Side sheet (full progress view) ────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────
+// Worker offline notice
+// ────────────────────────────────────────────────────────────────────────
 
-
-function ProgressSheet({
-  open,
-  setOpen,
-  run,
-  plan,
-  subagentList,
-  sources,
-  events,
-  onApprovePlan,
-  onCancel,
-  report,
-  query,
+function WorkerOfflineNotice({
+  compact,
+  status,
 }: {
-  open: boolean;
-  setOpen: Dispatch<SetStateAction<boolean>>;
-  run: ResearchRun | null;
-  plan: ResearchPlan | null;
-  subagentList: SubagentLive[];
-  sources: ResearchSource[];
-  events: StreamEvent[];
-  onApprovePlan: (edits?: {
-    subQuestions: ResearchSubQuestion[];
-    outline: ResearchOutlineSection[];
-  }) => Promise<void> | void;
-  onCancel: () => Promise<void> | void;
-  report?: ResearchReport;
-  query?: string;
+  compact?: boolean;
+  status: WorkerStatus;
 }) {
-  const status = run?.status ?? (report ? "done" : "queued");
+  const detail = status.error?.toLowerCase() ?? "";
+  const hint = detail.includes("database_url")
+    ? "Set DATABASE_URL on the backend service."
+    : detail.includes("cannot reach backend")
+    ? "Backend service is unreachable."
+    : null;
   return (
-    <Sheet onOpenChange={setOpen} open={open}>
-      <SheetContent
-        className="w-full max-w-2xl overflow-y-auto sm:max-w-2xl"
-        side="right"
-      >
-        <SheetHeader className="border-border border-b">
-          <SheetTitle className="text-base">
-            Research progress
-          </SheetTitle>
-          <p className="text-muted-foreground text-xs">
-            Status: {STATUS_LABELS[status] ?? status}
-          </p>
-        </SheetHeader>
-
-        <div className="space-y-5 px-4 py-4">
-          {plan && (
-            <section>
-              <h3 className="font-semibold text-muted-foreground text-xs uppercase tracking-wide">
-                Plan (v{plan.version})
-              </h3>
-              {plan.briefMd && (
-                <p className="mt-2 whitespace-pre-wrap text-foreground/85 text-sm">
-                  {plan.briefMd}
-                </p>
-              )}
-              {Array.isArray(plan.subQuestions) && plan.subQuestions.length > 0 && (
-                <ol className="mt-3 space-y-1 text-sm">
-                  {(plan.subQuestions as ResearchSubQuestion[]).map((q, i) => (
-                    <li className="flex gap-2" key={q.id}>
-                      <span className="shrink-0 text-muted-foreground">
-                        {i + 1}.
-                      </span>
-                      <span>{q.question}</span>
-                    </li>
-                  ))}
-                </ol>
-              )}
-            </section>
-          )}
-
-          {subagentList.length > 0 && (
-            <section>
-              <h3 className="font-semibold text-muted-foreground text-xs uppercase tracking-wide">
-                Sub-agents
-              </h3>
-              <ul className="mt-2 space-y-2">
-                {subagentList.map((sa) => (
-                  <li className="rounded-md border border-border bg-card p-3 text-sm" key={sa.id}>
-                    <div className="flex items-start justify-between gap-2">
-                      <p className="line-clamp-2 font-medium">
-                        {sa.subQuestion}
-                      </p>
-                      <SubagentBadge sa={sa} />
-                    </div>
-                    {sa.status === "running" && sa.latestAction && (
-                      <p className="mt-1 line-clamp-2 text-muted-foreground text-xs">
-                        {sa.latestAction}
-                        {sa.latestActionDetail ? `: ${sa.latestActionDetail}` : ""}
-                      </p>
-                    )}
-                    {sa.findingMd && (
-                      <details className="mt-2">
-                        <summary className="cursor-pointer text-muted-foreground text-xs hover:text-foreground">
-                          Show finding
-                        </summary>
-                        <pre className="mt-2 whitespace-pre-wrap rounded border border-border/70 bg-muted/30 p-2 font-sans text-xs">
-                          {sa.findingMd}
-                        </pre>
-                      </details>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-
-          <section>
-            <h3 className="font-semibold text-muted-foreground text-xs uppercase tracking-wide">
-              Live timeline
-            </h3>
-            <Timeline events={events} />
-          </section>
-
-          {sources.length > 0 && <SourcesList sources={sources} />}
-
-          {report && (
-            <section>
-              <h3 className="font-semibold text-muted-foreground text-xs uppercase tracking-wide">
-                Report
-              </h3>
-              <div className="mt-2 rounded-md border border-border bg-card p-4">
-                <ResearchReportRenderer
-                  citations={sources}
-                  markdown={report.markdown}
-                />
-              </div>
-            </section>
-          )}
-        </div>
-      </SheetContent>
-    </Sheet>
+    <div
+      className={cn(
+        "flex items-start gap-2 border-amber-500/30 bg-amber-500/5 px-3 py-2 text-amber-700 text-xs dark:text-amber-400",
+        compact ? "border-t" : "rounded-md border"
+      )}
+    >
+      <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0" />
+      <div className="min-w-0">
+        <p className="font-medium">Research worker is offline</p>
+        {status.error ? (
+          <p className="mt-0.5 break-all opacity-90">{status.error}</p>
+        ) : null}
+        {hint ? <p className="mt-1 opacity-80">{hint}</p> : null}
+      </div>
+    </div>
   );
 }
 
-function SubagentBadge({ sa }: { sa: SubagentLive }) {
-  if (sa.status === "failed") {
-    return (
-      <span className="shrink-0 rounded-full bg-destructive/10 px-2 py-0.5 font-medium text-[11px] text-destructive">
-        failed
-      </span>
-    );
+// ────────────────────────────────────────────────────────────────────────
+// Activity-feed builder + helpers
+// ────────────────────────────────────────────────────────────────────────
+
+function buildActivitySteps(
+  events: StreamEvent[],
+  subagents: SubagentLive[]
+): ActivityStep[] {
+  const steps: ActivityStep[] = [];
+  const subQById = new Map<string, string>();
+  for (const sa of subagents) subQById.set(sa.id, sa.subQuestion);
+
+  for (const evt of events) {
+    const id = typeof evt.payload?.id === "string" ? evt.payload.id : null;
+    const subQ = id ? subQById.get(id) ?? null : null;
+
+    switch (evt.type) {
+      case "brief_drafted":
+        steps.push({
+          icon: "spark",
+          kind: "phase",
+          label: "Framed the question",
+          ts: evt.ts,
+        });
+        break;
+      case "plan_proposed":
+        steps.push({
+          icon: "spark",
+          kind: "phase",
+          label: "Mapped out angles to investigate",
+          ts: evt.ts,
+        });
+        break;
+      case "research_started":
+        steps.push({
+          icon: "globe",
+          kind: "phase",
+          label: "Searching the web",
+          ts: evt.ts,
+        });
+        break;
+      case "subagent_started": {
+        const sq =
+          typeof evt.payload?.subQuestion === "string"
+            ? evt.payload.subQuestion
+            : null;
+        if (sq) {
+          if (id) subQById.set(id, sq);
+          steps.push({ kind: "task", subQuestion: sq, ts: evt.ts });
+        }
+        break;
+      }
+      case "subagent_progress": {
+        const action =
+          typeof evt.payload?.action === "string" ? evt.payload.action : null;
+        if (!action) break;
+        if (action === "search") {
+          const query =
+            typeof evt.payload.detail === "string" ? evt.payload.detail : "";
+          const rawResults = Array.isArray(evt.payload.results)
+            ? (evt.payload.results as Array<Record<string, unknown>>)
+            : [];
+          const results: SearchHit[] = rawResults
+            .map((r) => ({
+              host: String(r.host ?? hostOf(String(r.url ?? ""))),
+              snippet: String(r.snippet ?? ""),
+              title: String(r.title ?? ""),
+              url: String(r.url ?? ""),
+            }))
+            .filter((r) => r.url);
+          steps.push({
+            kind: "search",
+            query,
+            results,
+            subQuestion: subQ,
+            ts: evt.ts,
+          });
+        } else if (action === "scrape") {
+          const url =
+            typeof evt.payload.url === "string"
+              ? evt.payload.url
+              : typeof evt.payload.detail === "string"
+              ? evt.payload.detail
+              : "";
+          const ok =
+            typeof evt.payload.ok === "boolean" ? evt.payload.ok : true;
+          const chunks =
+            typeof evt.payload.chunks === "number"
+              ? (evt.payload.chunks as number)
+              : null;
+          const host =
+            typeof evt.payload.host === "string"
+              ? (evt.payload.host as string)
+              : hostOf(url);
+          steps.push({
+            chunks,
+            host,
+            kind: "read",
+            ok,
+            subQuestion: subQ,
+            ts: evt.ts,
+            url,
+          });
+        } else if (action === "retrieve") {
+          const query =
+            typeof evt.payload.detail === "string" ? evt.payload.detail : "";
+          const rawChunks = Array.isArray(evt.payload.chunks)
+            ? (evt.payload.chunks as Array<Record<string, unknown>>)
+            : [];
+          const chunks: RetrievedChunk[] = rawChunks.map((c) => ({
+            host: String(c.host ?? ""),
+            snippet: String(c.snippet ?? ""),
+            url: String(c.url ?? ""),
+          }));
+          steps.push({
+            chunks,
+            kind: "retrieve",
+            query,
+            subQuestion: subQ,
+            ts: evt.ts,
+          });
+        }
+        break;
+      }
+      case "writer_started":
+        steps.push({
+          icon: "file",
+          kind: "phase",
+          label: "Writing the report",
+          ts: evt.ts,
+        });
+        break;
+      case "report_written":
+        steps.push({
+          icon: "check",
+          kind: "phase",
+          label: "Report ready",
+          ts: evt.ts,
+        });
+        break;
+      default:
+        break;
+    }
   }
-  if (sa.status === "running") {
-    return (
-      <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 font-medium text-[11px] text-primary">
-        running
-      </span>
-    );
-  }
-  return (
-    <span className="shrink-0 rounded-full bg-emerald-500/10 px-2 py-0.5 font-medium text-[11px] text-emerald-700 dark:text-emerald-400">
-      done
-      {sa.sourceCount ? ` · ${sa.sourceCount}` : ""}
-    </span>
-  );
+
+  return steps;
 }
 
-function Timeline({ events }: { events: StreamEvent[] }) {
-  if (events.length === 0) {
-    return (
-      <p className="mt-1 text-muted-foreground text-xs">
-        Waiting for the worker to start…
-      </p>
-    );
+function deriveLiveLine(status: string, steps: ActivityStep[]): string {
+  for (let i = steps.length - 1; i >= 0; i -= 1) {
+    const s = steps[i];
+    if (s.kind === "search") return `Searching “${truncate(s.query, 60)}”`;
+    if (s.kind === "read") return `Reading ${s.host || "a source"}`;
+    if (s.kind === "retrieve") return "Pulling relevant excerpts";
+    if (s.kind === "task")
+      return `Looking into ${truncate(lowerFirst(s.subQuestion), 60)}`;
+    if (s.kind === "phase") return s.label;
   }
-  return (
-    <ol className="mt-2 space-y-1">
-      {events.map((evt) => (
-        <li className="flex flex-col text-xs" key={evt.seq}>
-          <span className="font-medium">{prettyType(evt.type)}</span>
-          <span className="text-[10px] text-muted-foreground">
-            seq {evt.seq}
-          </span>
-        </li>
-      ))}
-    </ol>
-  );
+  if (status === "queued") return "Starting up…";
+  if (status === "scoping" || status === "planning")
+    return "Mapping out angles to investigate";
+  if (status === "writing") return "Writing the report";
+  return "Getting started…";
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────
+function extractReportPreview(markdown: string): string | null {
+  const lines = markdown.split("\n");
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith("#")) continue;
+    if (line.startsWith(">")) continue;
+    if (line.startsWith("|")) continue;
+    if (line.startsWith("```")) continue;
+    const clean = line
+      .replace(/\[\d+\]/g, "")
+      .replace(/[*_`]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (clean.length < 20) continue;
+    return truncate(clean, 220);
+  }
+  return null;
+}
 
+function truncate(s: string, n: number): string {
+  if (s.length <= n) return s;
+  return `${s.slice(0, n - 1).trimEnd()}…`;
+}
 
-function prettyType(type: string): string {
-  return type.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+function lowerFirst(s: string): string {
+  if (!s) return s;
+  return s[0].toLowerCase() + s.slice(1);
 }
 
 function domainFor(url: string): string {
@@ -1443,6 +1374,10 @@ function domainFor(url: string): string {
   } catch {
     return url;
   }
+}
+
+function hostOf(url: string): string {
+  return domainFor(url);
 }
 
 function slugForFilename(query: string): string {

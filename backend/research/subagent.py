@@ -257,15 +257,74 @@ async def _safe_retrieve_chunks(query: str) -> tuple[str, list[dict[str, Any]]]:
 
 
 async def _emit_progress(
-    run_id: str, sub_agent_id: str, action: str, detail: str
+    run_id: str,
+    sub_agent_id: str,
+    action: str,
+    detail: str,
+    extra: dict[str, Any] | None = None,
 ) -> None:
     """Append a per-sub-agent progress event so the SSE timeline can
-    render the sub-agent's tool-by-tool activity."""
-    await append_event(
-        run_id,
-        "subagent_progress",
-        {"id": sub_agent_id, "action": action, "detail": detail},
-    )
+    render the sub-agent's tool-by-tool activity.
+
+    ``extra`` carries action-specific structured data so the UI can
+    render rich source cards (search hits, scraped pages, retrieved
+    chunks) instead of just ``action: search``-style placeholders.
+    """
+    payload: dict[str, Any] = {
+        "id": sub_agent_id,
+        "action": action,
+        "detail": detail,
+    }
+    if extra:
+        payload.update(extra)
+    await append_event(run_id, "subagent_progress", payload)
+
+
+def _host_of(url: str) -> str:
+    """Extract a hostname for display, stripping ``www.``."""
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(url).hostname or ""
+        return host[4:] if host.startswith("www.") else host
+    except Exception:
+        return ""
+
+
+def _parse_search_results(formatted: str) -> list[dict[str, str]]:
+    """Parse ``_run_web_search``'s formatted output back to structured
+    rows so we can ship them to the UI.
+
+    The format is ``[N] Title — URL\\nSnippet`` blocks separated by
+    blank lines (see :func:`backend.agent._run_web_search`).
+    """
+    import re
+
+    results: list[dict[str, str]] = []
+    for block in re.split(r"\n\n+", formatted.strip()):
+        m = re.match(
+            r"^\[\d+\]\s+(.+?)\s+[—–-]\s+(https?://\S+)\n?([\s\S]*)?$",
+            block,
+        )
+        if not m:
+            continue
+        title, url, snippet = m.group(1).strip(), m.group(2).strip(), (m.group(3) or "").strip()
+        results.append({
+            "title": title,
+            "url": url,
+            "host": _host_of(url),
+            "snippet": snippet,
+        })
+    return results
+
+
+def _parse_scrape_status(formatted: str) -> tuple[bool, int | None]:
+    """Parse ``_run_scrape_and_index``'s output to ``(ok, chunks)``."""
+    import re
+
+    m = re.match(r"Indexed (\d+) chunks? from", formatted)
+    if m:
+        return (True, int(m.group(1)))
+    return (False, None)
 
 
 async def _run_subagent_llm(
@@ -338,19 +397,42 @@ async def _run_subagent_llm(
             tool_result: str = ""
             if fn_name == "web_search":
                 query = str(fn_args.get("query", ""))
-                await _emit_progress(run_id, sub_agent_id, "search", query)
                 tool_result = await _safe_run_web_search(query)
+                results = _parse_search_results(tool_result)
+                # Keep the event payload bounded — a Serper response
+                # is up to 10 hits but more than ~6 in the UI feels
+                # like noise.
+                await _emit_progress(
+                    run_id,
+                    sub_agent_id,
+                    "search",
+                    query,
+                    extra={"results": results[:6]},
+                )
             elif fn_name == "scrape_and_index":
                 url = str(fn_args.get("url", ""))
-                await _emit_progress(run_id, sub_agent_id, "scrape", url)
                 tool_result = await _safe_scrape_and_index(url)
+                ok, chunk_count = _parse_scrape_status(tool_result)
+                await _emit_progress(
+                    run_id,
+                    sub_agent_id,
+                    "scrape",
+                    url,
+                    extra={
+                        "url": url,
+                        "host": _host_of(url),
+                        "ok": ok,
+                        "chunks": chunk_count,
+                    },
+                )
                 if url and url not in sources_by_url:
                     sources_by_url[url] = SubagentSource(url=url)
             elif fn_name == "retrieve_chunks":
                 query = str(fn_args.get("query", ""))
-                await _emit_progress(run_id, sub_agent_id, "retrieve", query)
                 tool_result, raw_chunks = await _safe_retrieve_chunks(query)
                 last_retrieved_urls = []
+                preview_chunks: list[dict[str, str]] = []
+                seen_hosts: set[str] = set()
                 for chunk in raw_chunks:
                     url = str(chunk.get("source_url") or "")
                     if not url:
@@ -361,6 +443,21 @@ async def _run_subagent_llm(
                             url=url,
                             snippet=str(chunk.get("text", ""))[:240] or None,
                         )
+                    host = _host_of(url)
+                    if host and host not in seen_hosts and len(preview_chunks) < 4:
+                        seen_hosts.add(host)
+                        preview_chunks.append({
+                            "host": host,
+                            "url": url,
+                            "snippet": str(chunk.get("text", ""))[:160],
+                        })
+                await _emit_progress(
+                    run_id,
+                    sub_agent_id,
+                    "retrieve",
+                    query,
+                    extra={"chunks": preview_chunks},
+                )
             else:
                 tool_result = f"Unknown tool: {fn_name}"
 
