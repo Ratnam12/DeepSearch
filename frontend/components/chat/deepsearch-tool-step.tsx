@@ -12,6 +12,7 @@ import {
 import type { JSX } from "react";
 import { useState, useId } from "react";
 import { cn } from "@/lib/utils";
+import { DotmCircular4 } from "@/components/ui/dotm-circular-4";
 import { DeepSearchMark } from "./deepsearch-mark";
 
 // A deliberately understated render of a single agent tool call. The
@@ -551,7 +552,15 @@ function ExpandableToolStep({
           )}
         />
         <span className="truncate">{label}</span>
-        {inProgress && (
+        {inProgress && type === "tool-web_search" ? (
+          // Radar Arc — semantic match for "scanning the web". Only
+          // web_search gets the dedicated loader; other tools keep
+          // the lightweight three-dot pulse so the visual language
+          // doesn't fragment across tool types.
+          <span aria-hidden className="ml-1 inline-flex text-muted-foreground/55">
+            <DotmCircular4 ariaLabel="Searching" color="currentColor" size={12} />
+          </span>
+        ) : inProgress ? (
           <span
             aria-hidden
             className="ml-1 inline-flex gap-0.5 text-muted-foreground/40"
@@ -560,7 +569,7 @@ function ExpandableToolStep({
             <span className="animate-[pulse_1.4s_ease-in-out_0.2s_infinite]">·</span>
             <span className="animate-[pulse_1.4s_ease-in-out_0.4s_infinite]">·</span>
           </span>
-        )}
+        ) : null}
         {hasBody && (
           <motion.span
             animate={{ rotate: open ? 180 : 0 }}

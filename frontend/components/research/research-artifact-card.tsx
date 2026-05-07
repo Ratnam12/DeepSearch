@@ -17,6 +17,10 @@ import {
   XCircleIcon,
 } from "lucide-react";
 import { useArtifact } from "@/hooks/use-artifact";
+import { DotmCircular11 } from "@/components/ui/dotm-circular-11";
+import { DotmCircular18 } from "@/components/ui/dotm-circular-18";
+import { DotmSquare11 } from "@/components/ui/dotm-square-11";
+import { DotmTriangle5 } from "@/components/ui/dotm-triangle-5";
 import {
   type Dispatch,
   type SetStateAction,
@@ -525,7 +529,7 @@ export function ResearchArtifactCard({
   if (!run) {
     return (
       <div className="flex h-[88px] items-center gap-2 rounded-xl border border-border/60 bg-card px-4 text-muted-foreground text-sm">
-        <Loader2Icon className="size-3.5 animate-spin" />
+        <DotmCircular18 ariaLabel="Loading" color="currentColor" size={14} />
         Loading research…
       </div>
     );
@@ -543,6 +547,7 @@ export function ResearchArtifactCard({
         isCancelled={isCancelled}
         isDone={isDone}
         isFailed={isFailed}
+        isWriting={status === "writing"}
         liveLine={liveLine}
         onOpen={onCardClick}
         query={query}
@@ -581,6 +586,7 @@ function ResearchPreviewCard({
   isCancelled,
   isDone,
   isFailed,
+  isWriting,
   liveLine,
   onOpen,
   query,
@@ -592,6 +598,7 @@ function ResearchPreviewCard({
   isCancelled: boolean;
   isDone: boolean;
   isFailed: boolean;
+  isWriting: boolean;
   liveLine: string;
   onOpen: () => void;
   query: string;
@@ -674,7 +681,23 @@ function ResearchPreviewCard({
               </span>
             ) : (
               <span className="flex items-center gap-1.5 text-muted-foreground">
-                <PulsingDot />
+                {/* Row Sweep when writing — directional sweep
+                    visually echoes "building output left-to-right"
+                    instead of the calmer Lunar Breathe used during
+                    the search/read phases. */}
+                {isWriting ? (
+                  <DotmTriangle5
+                    ariaLabel="Writing"
+                    color="currentColor"
+                    size={14}
+                  />
+                ) : (
+                  <DotmCircular11
+                    ariaLabel="Researching"
+                    color="currentColor"
+                    size={14}
+                  />
+                )}
                 <span className="truncate">{liveLine}</span>
               </span>
             )}
@@ -936,7 +959,7 @@ export function ActivityFeed({
   if (steps.length === 0) {
     return (
       <p className="mt-3 flex items-center gap-2 text-[13px] text-muted-foreground">
-        <Loader2Icon className="size-3.5 animate-spin" />
+        <DotmCircular18 ariaLabel="Loading" color="currentColor" size={14} />
         {status === "queued"
           ? "Waiting for the research worker to pick this up…"
           : "Getting started…"}
@@ -977,7 +1000,7 @@ function ActivityStepRow({
           )}
         >
           {showTrailingPulse ? (
-            <Loader2Icon className="size-3 animate-spin" />
+            <DotmSquare11 ariaLabel="Working" color="currentColor" size={12} />
           ) : (
             <Icon className="size-3" />
           )}
