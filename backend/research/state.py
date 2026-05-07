@@ -32,10 +32,18 @@ RUN_STATUSES = (
 
 TERMINAL_STATUSES = frozenset({"done", "failed", "cancelled"})
 
-# Statuses the worker should pick back up after a crash/restart. A run
-# stuck in `awaiting_approval` is *not* resumable autonomously — it's
-# blocked on user input via POST /api/research/[id]/plan.
-RESUMABLE_STATUSES = frozenset({"scoping", "planning", "researching", "writing"})
+# Statuses the worker should pick back up after a crash/restart. The
+# pipeline auto-approves plans (OpenAI Deep Research-style — no manual
+# gate), so `awaiting_approval` is also resumable: any run that landed
+# there under the old blocking pipeline gets pushed forward on the
+# next boot instead of holding the worker hostage forever.
+RESUMABLE_STATUSES = frozenset({
+    "scoping",
+    "planning",
+    "awaiting_approval",
+    "researching",
+    "writing",
+})
 
 
 async def get_run(run_id: str) -> Optional[dict[str, Any]]:

@@ -188,7 +188,13 @@ async def _wait_for_plan_approval(run: dict[str, Any]) -> None:
 
 
 async def _auto_approve_plan(run_id: str) -> None:
-    """Test-only helper: approve the latest plan and flip to researching."""
+    """Approve the latest plan for this run and flip status to researching.
+
+    Called inline by the pipeline so the worker doesn't deadlock on a
+    user click that may never arrive — the plan is already visible to
+    the user via `plan_proposed`, so this is the OpenAI-Deep-Research-
+    style "show the plan but keep going" UX.
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -296,14 +302,20 @@ async def run_pipeline(run: dict[str, Any]) -> None:
 
         if current_status == "planning":
             await _run_planning(run)
-            await transition_status(run_id, "awaiting_approval")
-            current_status = "awaiting_approval"
+            # Auto-approve the plan and dive straight into research —
+            # the worker is single-flight, so blocking on a user click
+            # here would freeze the queue for everyone else. The plan
+            # is still announced via `plan_proposed`, so the timeline
+            # shows what's about to be researched.
+            await _auto_approve_plan(run_id)
+            await append_event(run_id, "research_started", {})
+            current_status = "researching"
 
         if current_status == "awaiting_approval":
-            await _wait_for_plan_approval(run)
-            # _wait_for_plan_approval returns once status='researching';
-            # transition_status would double-write, so we just record
-            # the phase-start event explicitly.
+            # Resume path: a run from before auto-approval landed.
+            # Push it forward instead of polling a click that will
+            # never come.
+            await _auto_approve_plan(run_id)
             await append_event(run_id, "research_started", {})
             current_status = "researching"
 

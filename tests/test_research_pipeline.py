@@ -19,7 +19,7 @@ ResearchRun's FKs handles the dependent tables).
 
 Run with::
 
-    PYTHONPATH=. RESEARCH_PHASE_DELAY_S=0.2 RESEARCH_AUTO_APPROVE_AFTER_S=2 \
+    PYTHONPATH=. RESEARCH_PHASE_DELAY_S=0.2 \
         venv/bin/pytest tests/test_research_pipeline.py -v
 """
 
@@ -238,17 +238,22 @@ async def test_happy_path_pipeline_runs_to_done() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cancel_during_awaiting_approval() -> None:
-    """A run cancelled while waiting for approval terminates without a report."""
-    # Long auto-approve so the run sits in awaiting_approval long enough.
+async def test_cancel_mid_research_terminates_without_report() -> None:
+    """Cancelling a run mid-pipeline stops it before the report is written.
+
+    The pipeline auto-approves plans (no manual gate), so we slow each
+    phase down with RESEARCH_PHASE_DELAY_S and cancel as soon as the run
+    enters `researching` — the supervisor's cancellation poll should
+    bail out before the writer is reached.
+    """
     env = _worker_env()
-    env["RESEARCH_AUTO_APPROVE_AFTER_S"] = "60"
+    env["RESEARCH_PHASE_DELAY_S"] = "2.0"
 
     await _wipe_test_rows()
     run_id = await _create_run("integration-test cancel")
     proc = subprocess.Popen(WORKER_CMD, env=env, cwd=REPO_ROOT)
     try:
-        await _wait_for_status(run_id, "awaiting_approval", timeout_s=60)
+        await _wait_for_status(run_id, "researching", timeout_s=60)
 
         # Simulate the cancel API: flip status + emit a cancel event.
         pool = await get_pool()
@@ -263,8 +268,7 @@ async def test_cancel_during_awaiting_approval() -> None:
             )
         await append_event(run_id, "run_cancelled", {"reason": "user_cancelled"})
 
-        # The worker's awaiting-approval loop polls every 0.5s; give it a beat.
-        await _wait_for_status(run_id, "cancelled", timeout_s=10)
+        await _wait_for_status(run_id, "cancelled", timeout_s=30)
     finally:
         _terminate_worker(proc)
 
@@ -670,14 +674,17 @@ async def test_planner_llm_call_smoke() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fetch_resumable_runs_skips_terminal_and_awaiting_approval() -> None:
-    """The boot-up sweep must include mid-flight rows but exclude others."""
+async def test_fetch_resumable_runs_skips_terminal_and_queued() -> None:
+    """The boot-up sweep must include every mid-flight row (including
+    `awaiting_approval`, since the pipeline now auto-approves it on
+    resume) but exclude `queued` (claim_queued_run handles those) and
+    terminal states.
+    """
     await _wipe_test_rows()
     pool = await get_pool()
-    test_runs: list[str] = []
+    test_runs: dict[str, str] = {}
     try:
         async with pool.acquire() as conn:
-            # One in each interesting status.
             for status in ("queued", "researching", "awaiting_approval", "done", "failed"):
                 row = await conn.fetchrow(
                     """
@@ -689,19 +696,22 @@ async def test_fetch_resumable_runs_skips_terminal_and_awaiting_approval() -> No
                     f"resumable test {status}",
                     status,
                 )
-                test_runs.append(str(row["id"]))
+                test_runs[status] = str(row["id"])
 
         resumable = await fetch_resumable_runs()
         ids = {str(r["id"]) for r in resumable}
-        # 'researching' should be in the resumable set; everything else shouldn't.
-        researching_id = test_runs[1]
-        for excluded_id in (test_runs[0], test_runs[2], test_runs[3], test_runs[4]):
-            assert excluded_id not in ids, f"non-resumable {excluded_id} surfaced"
-        assert researching_id in ids
+        assert test_runs["researching"] in ids
+        assert test_runs["awaiting_approval"] in ids, (
+            "awaiting_approval must resume so old runs from the blocking "
+            "pipeline get pushed forward instead of holding the worker"
+        )
+        for excluded in ("queued", "done", "failed"):
+            assert test_runs[excluded] not in ids, (
+                f"non-resumable {excluded} surfaced"
+            )
     finally:
-        # Clean up regardless.
         async with pool.acquire() as conn:
             await conn.execute(
                 'DELETE FROM "ResearchRun" WHERE "id" = ANY($1::uuid[])',
-                test_runs,
+                list(test_runs.values()),
             )
