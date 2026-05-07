@@ -12,7 +12,7 @@ import {
 import type { JSX } from "react";
 import { useState, useId } from "react";
 import { cn } from "@/lib/utils";
-import { DotmCircular4 } from "@/components/ui/dotm-circular-4";
+import { Ring } from "@/components/ui/loader-ring";
 import { DeepSearchMark } from "./deepsearch-mark";
 
 // A deliberately understated render of a single agent tool call. The
@@ -553,13 +553,14 @@ function ExpandableToolStep({
         />
         <span className="truncate">{label}</span>
         {inProgress && type === "tool-web_search" ? (
-          // Radar Arc — semantic match for "scanning the web". Only
-          // web_search gets the dedicated loader; other tools keep
-          // the lightweight three-dot pulse so the visual language
-          // doesn't fragment across tool types.
-          <span aria-hidden className="ml-1 inline-flex text-muted-foreground/55">
-            <DotmCircular4 ariaLabel="Searching" color="currentColor" size={12} />
-          </span>
+          // Ring spinner — semantic match for "scanning the web".
+          // Only web_search gets the dedicated loader; other tools
+          // keep the lightweight three-dot pulse so the visual
+          // language doesn't fragment across tool types.
+          <Ring
+            aria-label="Searching"
+            className="ml-1 size-3 text-muted-foreground/55"
+          />
         ) : inProgress ? (
           <span
             aria-hidden

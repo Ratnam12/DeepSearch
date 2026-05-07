@@ -1,6 +1,5 @@
 @import "tailwindcss";
 @import "katex/dist/katex.min.css";
-@import "../components/dotmatrix-loader.css";
 
 @source "../node_modules/streamdown/dist/index.js";
 

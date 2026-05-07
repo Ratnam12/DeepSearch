@@ -17,10 +17,10 @@ import {
   XCircleIcon,
 } from "lucide-react";
 import { useArtifact } from "@/hooks/use-artifact";
-import { DotmCircular11 } from "@/components/ui/dotm-circular-11";
-import { DotmCircular18 } from "@/components/ui/dotm-circular-18";
-import { DotmSquare11 } from "@/components/ui/dotm-square-11";
-import { DotmTriangle5 } from "@/components/ui/dotm-triangle-5";
+import { BouncingDots } from "@/components/ui/loader-bouncing-dots";
+import { Dots } from "@/components/ui/loader-dots";
+import { PulseDot } from "@/components/ui/loader-pulse-dot";
+import { Wave } from "@/components/ui/loader-wave";
 import {
   type Dispatch,
   type SetStateAction,
@@ -529,7 +529,7 @@ export function ResearchArtifactCard({
   if (!run) {
     return (
       <div className="flex h-[88px] items-center gap-2 rounded-xl border border-border/60 bg-card px-4 text-muted-foreground text-sm">
-        <DotmCircular18 ariaLabel="Loading" color="currentColor" size={14} />
+        <Dots aria-label="Loading" className="h-1.5 w-6 text-muted-foreground" />
         Loading research…
       </div>
     );
@@ -681,21 +681,18 @@ function ResearchPreviewCard({
               </span>
             ) : (
               <span className="flex items-center gap-1.5 text-muted-foreground">
-                {/* Row Sweep when writing — directional sweep
-                    visually echoes "building output left-to-right"
-                    instead of the calmer Lunar Breathe used during
-                    the search/read phases. */}
+                {/* Wave when writing — vertical bars visually echo
+                    "building output" rhythm; PulseDot for the calmer
+                    search/read phases. */}
                 {isWriting ? (
-                  <DotmTriangle5
-                    ariaLabel="Writing"
-                    color="currentColor"
-                    size={14}
+                  <Wave
+                    aria-label="Writing"
+                    className="h-3 w-4 text-muted-foreground"
                   />
                 ) : (
-                  <DotmCircular11
-                    ariaLabel="Researching"
-                    color="currentColor"
-                    size={14}
+                  <PulseDot
+                    aria-label="Researching"
+                    className="size-1.5 text-primary"
                   />
                 )}
                 <span className="truncate">{liveLine}</span>
@@ -959,7 +956,7 @@ export function ActivityFeed({
   if (steps.length === 0) {
     return (
       <p className="mt-3 flex items-center gap-2 text-[13px] text-muted-foreground">
-        <DotmCircular18 ariaLabel="Loading" color="currentColor" size={14} />
+        <Dots aria-label="Loading" className="h-1.5 w-6 text-muted-foreground" />
         {status === "queued"
           ? "Waiting for the research worker to pick this up…"
           : "Getting started…"}
@@ -1000,7 +997,10 @@ function ActivityStepRow({
           )}
         >
           {showTrailingPulse ? (
-            <DotmSquare11 ariaLabel="Working" color="currentColor" size={12} />
+            <BouncingDots
+              aria-label="Working"
+              className="h-1.5 w-3.5 text-current"
+            />
           ) : (
             <Icon className="size-3" />
           )}
