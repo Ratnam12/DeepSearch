@@ -15,6 +15,7 @@ import useSWR, { useSWRConfig } from "swr";
 import { useWindowSize } from "usehooks-ts";
 import { codeArtifact } from "@/artifacts/code/client";
 import { imageArtifact } from "@/artifacts/image/client";
+import { researchArtifact } from "@/artifacts/research/client";
 import { sheetArtifact } from "@/artifacts/sheet/client";
 import { textArtifact } from "@/artifacts/text/client";
 import { useArtifact } from "@/hooks/use-artifact";
@@ -34,6 +35,7 @@ export const artifactDefinitions = [
   codeArtifact,
   imageArtifact,
   sheetArtifact,
+  researchArtifact,
 ];
 export type ArtifactKind = (typeof artifactDefinitions)[number]["kind"];
 
@@ -89,12 +91,20 @@ function PureArtifact({
 }) {
   const { artifact, setArtifact, metadata, setMetadata } = useArtifact();
 
+  // Skip the document-versioning fetch for the research artifact —
+  // research runs aren't backed by Document rows; their content is
+  // loaded via the artifact's own initialize hook against
+  // /api/research/[id].
+  const useDocumentVersioning =
+    artifact.documentId !== "init" &&
+    artifact.status !== "streaming" &&
+    artifact.kind !== "research";
   const {
     data: documents,
     isLoading: isDocumentsFetching,
     mutate: mutateDocuments,
   } = useSWR<Document[]>(
-    artifact.documentId !== "init" && artifact.status !== "streaming"
+    useDocumentVersioning
       ? `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/document?id=${artifact.documentId}`
       : null,
     fetcher

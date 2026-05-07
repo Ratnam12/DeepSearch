@@ -16,6 +16,7 @@ import {
   TelescopeIcon,
   XCircleIcon,
 } from "lucide-react";
+import { useArtifact } from "@/hooks/use-artifact";
 import {
   type Dispatch,
   type SetStateAction,
@@ -58,14 +59,14 @@ const TERMINAL_STATUSES = new Set(["done", "failed", "cancelled"]);
 
 const EASE: [number, number, number, number] = [0.22, 1, 0.36, 1];
 
-type StreamEvent = {
+export type StreamEvent = {
   seq: number;
   type: string;
   ts: string;
   payload: Record<string, unknown>;
 };
 
-type SubagentLive = {
+export type SubagentLive = {
   id: string;
   subQuestion: string;
   status: "running" | "done" | "failed";
@@ -84,7 +85,7 @@ type WorkerStatus = {
   stopped_at: string | null;
 };
 
-function subagentFromRow(row: ResearchSubagent): SubagentLive {
+export function subagentFromRow(row: ResearchSubagent): SubagentLive {
   const rawStatus = row.status;
   const status: SubagentLive["status"] =
     rawStatus === "done" || rawStatus === "failed" ? rawStatus : "running";
@@ -102,16 +103,16 @@ function subagentFromRow(row: ResearchSubagent): SubagentLive {
 
 // ── Activity-feed types ─────────────────────────────────────────────────
 
-type SearchHit = {
+export type SearchHit = {
   title: string;
   url: string;
   host: string;
   snippet: string;
 };
 
-type RetrievedChunk = { host: string; url: string; snippet: string };
+export type RetrievedChunk = { host: string; url: string; snippet: string };
 
-type ActivityStep =
+export type ActivityStep =
   | {
       kind: "phase";
       ts: string;
@@ -191,6 +192,7 @@ export function ResearchArtifactCard({
           subagents: ResearchSubagent[];
           sources: ResearchSource[];
           report: ResearchReport | null;
+          events?: StreamEvent[];
         };
         if (cancelled) return;
         setRun(snap.run);
@@ -202,6 +204,12 @@ export function ResearchArtifactCard({
             (snap.subagents ?? []).map((sa) => [sa.id, subagentFromRow(sa)])
           )
         );
+        // Seed the events list from the snapshot so terminal runs
+        // (which never open an SSE connection) still render the full
+        // activity history. The SSE branch below dedupes by seq.
+        if (Array.isArray(snap.events) && snap.events.length > 0) {
+          setEvents(snap.events);
+        }
       } catch (err) {
         if (!cancelled) {
           setLoadError(
@@ -502,6 +510,27 @@ export function ResearchArtifactCard({
     workerStatus.configured === true &&
     workerStatus.running === false;
 
+  // Done runs open the artifact pane (right-side, full-height,
+  // tabbed Report/Sources/Activity); in-progress runs open the
+  // lighter side sheet so the user can watch the live activity feed
+  // without committing the full-screen real estate.
+  const { setArtifact } = useArtifact();
+  const onCardClick = useCallback(() => {
+    if (isDone && report) {
+      setArtifact({
+        documentId: run.id,
+        kind: "research" as const,
+        title: query.length > 80 ? `${query.slice(0, 79)}…` : query,
+        content: report.markdown,
+        status: "idle",
+        isVisible: true,
+        boundingBox: { top: 0, left: 0, width: 0, height: 0 },
+      });
+      return;
+    }
+    setSheetOpen(true);
+  }, [isDone, report, run.id, query, setArtifact]);
+
   return (
     <>
       <ResearchPreviewCard
@@ -510,7 +539,7 @@ export function ResearchArtifactCard({
         isDone={isDone}
         isFailed={isFailed}
         liveLine={liveLine}
-        onOpen={() => setSheetOpen(true)}
+        onOpen={onCardClick}
         query={query}
         reportPreview={reportPreview}
         sourceCount={sources.length}
@@ -652,7 +681,7 @@ function ResearchPreviewCard({
   );
 }
 
-function PreviewIcon({
+export function PreviewIcon({
   isCancelled,
   isDone,
   isFailed,
@@ -881,7 +910,7 @@ function ResearchSheet({
 // Activity feed
 // ────────────────────────────────────────────────────────────────────────
 
-function ActivityFeed({
+export function ActivityFeed({
   inProgress,
   status,
   steps,
@@ -1084,7 +1113,7 @@ function SourceCardList({ results }: { results: SearchHit[] }) {
 // Sources list (final, deduped)
 // ────────────────────────────────────────────────────────────────────────
 
-function SourcesList({ sources }: { sources: ResearchSource[] }) {
+export function SourcesList({ sources }: { sources: ResearchSource[] }) {
   return (
     <div>
       <h3 className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.08em]">
@@ -1176,7 +1205,7 @@ function WorkerOfflineNotice({
 // Activity-feed builder + helpers
 // ────────────────────────────────────────────────────────────────────────
 
-function buildActivitySteps(
+export function buildActivitySteps(
   events: StreamEvent[],
   subagents: SubagentLive[]
 ): ActivityStep[] {
@@ -1337,7 +1366,7 @@ function deriveLiveLine(status: string, steps: ActivityStep[]): string {
   return "Getting started…";
 }
 
-function extractReportPreview(markdown: string): string | null {
+export function extractReportPreview(markdown: string): string | null {
   const lines = markdown.split("\n");
   for (const raw of lines) {
     const line = raw.trim();

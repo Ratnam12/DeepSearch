@@ -32,10 +32,12 @@ logger = logging.getLogger("deepsearch.research.supervisor")
 
 # How many sub-agents can run at once. Each sub-agent does several
 # tool calls + LLM round-trips, so this caps the OpenRouter parallel
-# fan-out and the concurrent Playwright instances. Tunable per-env;
-# default 3 is a sweet spot between speed and rate limits.
+# fan-out and the concurrent Playwright instances. Default 4 is a
+# sweet spot — with 8–12 sub-questions per plan, two waves of 4 keeps
+# total wall time in the 15–25 min range typical of deep-research
+# products without saturating Serper / OpenRouter rate limits.
 DEFAULT_CONCURRENCY = int(
-    os.environ.get("RESEARCH_SUBAGENT_CONCURRENCY", "3")
+    os.environ.get("RESEARCH_SUBAGENT_CONCURRENCY", "4")
 )
 
 

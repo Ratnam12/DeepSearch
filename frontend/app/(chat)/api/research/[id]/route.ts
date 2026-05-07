@@ -4,15 +4,18 @@ import {
   getLatestResearchPlan,
   getLatestResearchReport,
   getResearchRunById,
+  listResearchEventsSince,
   listResearchSources,
   listResearchSubagents,
 } from "@/lib/db/queries-research";
 import { ChatbotError } from "@/lib/errors";
 
 // GET /api/research/[id] → full snapshot for a single run.
-// Used by the /research/[id] page on initial load and on refresh — it
-// returns enough state to render the report view without waiting for
-// the SSE replay. The SSE endpoint is then opened for live updates.
+// Returns enough state to render the report + activity view without
+// the SSE stream. The SSE endpoint is still opened on top for live
+// runs so newly-arriving events flow in. For terminal runs, the
+// `events` array in this snapshot is the only history source — the
+// artifact pane uses it to render the activity tab.
 export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -31,12 +34,13 @@ export async function GET(
     return new ChatbotError("forbidden:chat").toResponse();
   }
 
-  const [plan, subagents, sources, report] = await Promise.all([
+  const [plan, subagents, sources, report, events] = await Promise.all([
     getLatestResearchPlan({ runId: id }),
     listResearchSubagents({ runId: id }),
     listResearchSources({ runId: id }),
     getLatestResearchReport({ runId: id }),
+    listResearchEventsSince({ runId: id, sinceSeq: 0 }),
   ]);
 
-  return Response.json({ run, plan, subagents, sources, report });
+  return Response.json({ run, plan, subagents, sources, report, events });
 }

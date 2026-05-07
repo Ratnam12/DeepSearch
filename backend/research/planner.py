@@ -11,11 +11,12 @@ The planner's job is small but load-bearing:
   reframes the user's query into a clear scope statement, identifies
   what's known vs. what needs investigation, and notes any obvious
   ambiguity that the user should clarify.
-- ``subQuestions`` — 3–8 independent, parallelisable sub-questions
-  that together cover the brief. Each carries an ``id`` (used as the
+- ``subQuestions`` — 6–12 independent, parallelisable sub-questions
+  that together cover the brief at depth (this is a *deep* research
+  agent, not a quick lookup). Each carries an ``id`` (used as the
   sub-agent identifier in phase 3+) and a short ``rationale``
   explaining why the question matters.
-- ``outline`` — 3–6 sections for the final report, each with an ``id``
+- ``outline`` — 4–8 sections for the final report, each with an ``id``
   used as the section anchor in phase 4's writer.
 
 The whole output gets shown to the user as the plan-approval card; the
@@ -56,8 +57,8 @@ PLAN_SCHEMA: dict[str, Any] = {
         },
         "subQuestions": {
             "type": "array",
-            "minItems": 3,
-            "maxItems": 8,
+            "minItems": 6,
+            "maxItems": 12,
             "items": {
                 "type": "object",
                 "additionalProperties": False,
@@ -76,8 +77,8 @@ PLAN_SCHEMA: dict[str, Any] = {
         },
         "outline": {
             "type": "array",
-            "minItems": 3,
-            "maxItems": 6,
+            "minItems": 4,
+            "maxItems": 8,
             "items": {
                 "type": "object",
                 "additionalProperties": False,
@@ -96,7 +97,10 @@ PLAN_SCHEMA: dict[str, Any] = {
 }
 
 
-_SYSTEM_PROMPT = """You are the planning module of a deep-research agent.
+_SYSTEM_PROMPT = """You are the planning module of a *deep* research agent
+— think OpenAI Deep Research, not a quick web lookup. The downstream
+sub-agents will spend 1–3 minutes each doing thorough investigation,
+so plan for breadth and depth, not minimal coverage.
 
 Given a user's research query, produce a research plan that another
 agent (or set of parallel sub-agents) can execute. Return JSON
@@ -105,18 +109,24 @@ code fence, just the JSON object.
 
 Constraints:
 
-1. ``briefMd`` is 1–3 short paragraphs in markdown, not a wall of
-   text. Reframe the user's query as a clear scope, surface obvious
-   ambiguities, and flag anything the user might want to clarify.
-2. ``subQuestions`` are 3–8 *independent* questions. Each one should
-   be answerable on its own, without depending on another sub-
-   question's findings. If two sub-questions can't be researched in
-   parallel, merge them or drop one. Use ids ``sq1``, ``sq2``, …
-3. ``outline`` is 3–6 report sections. Section titles should describe
+1. ``briefMd`` is 2–4 paragraphs in markdown. Reframe the user's
+   query as a clear scope, identify the major facets that need to be
+   explored, surface obvious ambiguities, and flag anything the user
+   might want to clarify.
+2. ``subQuestions`` are 6–12 *independent* questions. Aim for the
+   higher end (8–12) when the topic is broad. Each should be
+   answerable on its own, without depending on another sub-question's
+   findings — if two can't be researched in parallel, merge them.
+   Cover distinct angles (background, current state, technical
+   detail, comparisons, controversies, real-world examples,
+   limitations, future directions, etc.) — repetition is wasted
+   compute. Use ids ``sq1``, ``sq2``, …
+3. ``outline`` is 4–8 report sections. Section titles should describe
    the section's content, not the user's question. Use ids
    ``s1``, ``s2``, …
-4. Keep each ``rationale`` and ``description`` to one short sentence —
-   they're hints, not paragraphs.
+4. Keep each ``rationale`` to one or two sentences explaining what
+   the sub-agent should focus on and why it matters for the report.
+   ``description`` for outline sections stays one short sentence.
 5. Do not invent facts. The plan is a research blueprint; the actual
    facts come from the sub-agents and the writer."""
 
@@ -234,9 +244,9 @@ def _validate_plan_payload(payload: dict[str, Any]) -> None:
         raise ValueError("briefMd must be a non-empty string")
 
     sub_qs = payload["subQuestions"]
-    if not isinstance(sub_qs, list) or not (3 <= len(sub_qs) <= 8):
+    if not isinstance(sub_qs, list) or not (3 <= len(sub_qs) <= 12):
         raise ValueError(
-            f"subQuestions must be a list of 3–8 items (got {len(sub_qs) if isinstance(sub_qs, list) else 'non-list'})"
+            f"subQuestions must be a list of 3–12 items (got {len(sub_qs) if isinstance(sub_qs, list) else 'non-list'})"
         )
     for sq in sub_qs:
         if not isinstance(sq, dict):
@@ -246,8 +256,8 @@ def _validate_plan_payload(payload: dict[str, Any]) -> None:
                 raise ValueError(f"sub-question missing/empty {k}")
 
     outline = payload["outline"]
-    if not isinstance(outline, list) or not (3 <= len(outline) <= 6):
-        raise ValueError("outline must be a list of 3–6 items")
+    if not isinstance(outline, list) or not (3 <= len(outline) <= 8):
+        raise ValueError("outline must be a list of 3–8 items")
     for sec in outline:
         if not isinstance(sec, dict):
             raise ValueError("each outline section must be an object")
@@ -280,7 +290,7 @@ async def _call_llm(query: str, model: str) -> dict[str, Any]:
         ],
         response_format={"type": "json_object"},
         temperature=0.4,
-        max_tokens=2500,
+        max_tokens=4500,
     )
     raw = response.choices[0].message.content or "{}"
     try:

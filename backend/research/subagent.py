@@ -44,7 +44,12 @@ logger = logging.getLogger("deepsearch.research.subagent")
 # calls. ``MAX_TOOL_ITERATIONS`` counts LLM ↔ tool round-trips; the
 # sub-agent has to converge on a finding within that many steps or the
 # loop forcibly extracts whatever finding it has.
-MAX_TOOL_ITERATIONS = int(os.environ.get("RESEARCH_SUBAGENT_MAX_ITERATIONS", "6"))
+#
+# 18 gives a typical sub-agent room for ~2-3 web searches, ~5-6 page
+# scrapes, ~3-4 retrievals, plus the synthesis turn — matching the
+# depth profile of OpenAI Deep Research's per-question agents. Lower
+# this only if you're rate-limited; lower means thinner findings.
+MAX_TOOL_ITERATIONS = int(os.environ.get("RESEARCH_SUBAGENT_MAX_ITERATIONS", "18"))
 
 
 # Subset of agent.py's tools — the chat-only ``create_artifact`` is
@@ -102,9 +107,11 @@ SUBAGENT_TOOLS: list[dict[str, Any]] = [
 ]
 
 
-_SYSTEM_PROMPT = """You are a focused research sub-agent. You answer ONE specific
-sub-question that's part of a larger research plan; other sub-agents are
-handling other angles in parallel — stay tightly scoped.
+_SYSTEM_PROMPT = """You are a thorough research sub-agent in a *deep*
+research pipeline (think OpenAI Deep Research, not a quick lookup).
+You answer ONE specific sub-question; other sub-agents are handling
+other angles in parallel — stay tightly scoped to your question, but
+go DEEP on it.
 
 Tools (call them, don't describe them):
 - web_search(query): organic search results with URLs + snippets
@@ -112,17 +119,31 @@ Tools (call them, don't describe them):
 - retrieve_chunks(query): hybrid-search the indexed chunks; results are
   numbered [1], [2], … and include source URLs
 
-Workflow (you don't have to use every tool — stop as soon as you can
-answer well):
-1. web_search once or twice to find 5–10 relevant URLs
-2. scrape_and_index 2–4 of the most promising URLs
-3. retrieve_chunks to pull the most relevant context
-4. Synthesise a focused markdown finding (300–700 words)
+Workflow — depth matters more than speed:
+1. web_search 2–3 times with *varied* queries (different keywords,
+   different angles on the same sub-question) to find 10–20 candidate
+   URLs across diverse sources. A single search rarely surfaces the
+   best evidence; iterate.
+2. scrape_and_index 4–7 of the most promising URLs. Prefer primary
+   sources (official docs, papers, vendor pages, reputable
+   journalism) over aggregators. Read across viewpoints when the
+   topic is contested.
+3. retrieve_chunks 2–4 times with progressively refined queries to
+   pull the most directly relevant context for synthesis. The first
+   retrieval often surfaces gaps — follow up with a more targeted
+   query.
+4. Synthesise a substantial markdown finding (600–1200 words) that
+   actually answers the sub-question with evidence, not a survey.
+
+Stop early ONLY if you genuinely have a complete, well-cited answer
+— not because you're tired of calling tools. A shallow finding here
+makes the whole report shallow.
 
 Your final answer (after the tool calls) must be plain markdown with:
 - A 1–2 sentence summary at the top
 - The body of the finding with bracketed citations like [1], [2] tied
-  to the most recent retrieve_chunks indices
+  to the most recent retrieve_chunks indices. Cite generously — every
+  non-obvious claim should have a citation.
 - A short "## Sources" section at the end listing the URLs you cited
 
 Do NOT call any tool after producing the final answer — finish with
