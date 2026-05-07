@@ -32,7 +32,7 @@ from backend.agent import (
     _run_web_search,
 )
 from backend.config import get_settings
-from backend.research.db import get_pool
+from backend.research.db import get_pool, openrouter_session_meta
 from backend.research.events import append_event
 from backend.research.state import is_cancelled
 from backend.retriever import hybrid_search
@@ -50,6 +50,16 @@ logger = logging.getLogger("deepsearch.research.subagent")
 # depth profile of OpenAI Deep Research's per-question agents. Lower
 # this only if you're rate-limited; lower means thinner findings.
 MAX_TOOL_ITERATIONS = int(os.environ.get("RESEARCH_SUBAGENT_MAX_ITERATIONS", "18"))
+
+
+# Iteration floor — LLMs have a strong "stop early" bias and will
+# emit a final answer after 3-5 tool calls if you let them, even
+# when the system prompt asks for depth. This forces a minimum
+# amount of research before the model is allowed to finalise: when
+# it tries to emit a final answer below this floor, we inject a
+# "keep going" system message and continue the loop. Pushes typical
+# per-sub-agent runtime from ~30s to ~2 min.
+MIN_TOOL_ITERATIONS = int(os.environ.get("RESEARCH_SUBAGENT_MIN_ITERATIONS", "10"))
 
 
 # Subset of agent.py's tools — the chat-only ``create_artifact`` is
@@ -111,7 +121,8 @@ _SYSTEM_PROMPT = """You are a thorough research sub-agent in a *deep*
 research pipeline (think OpenAI Deep Research, not a quick lookup).
 You answer ONE specific sub-question; other sub-agents are handling
 other angles in parallel — stay tightly scoped to your question, but
-go DEEP on it.
+go DEEP on it. A run that finishes in under two minutes per sub-
+question is shallow; aim for thorough.
 
 Tools (call them, don't describe them):
 - web_search(query): organic search results with URLs + snippets
@@ -119,25 +130,31 @@ Tools (call them, don't describe them):
 - retrieve_chunks(query): hybrid-search the indexed chunks; results are
   numbered [1], [2], … and include source URLs
 
-Workflow — depth matters more than speed:
-1. web_search 2–3 times with *varied* queries (different keywords,
-   different angles on the same sub-question) to find 10–20 candidate
-   URLs across diverse sources. A single search rarely surfaces the
-   best evidence; iterate.
-2. scrape_and_index 4–7 of the most promising URLs. Prefer primary
+REQUIRED minimum activity before you produce a final answer (the
+loop will refuse to accept a finalisation that's below these counts
+and will push you to keep going):
+- At least 3 web_search calls with DIFFERENT phrasings/angles
+- At least 4 scrape_and_index calls on the most promising URLs
+- At least 2 retrieve_chunks calls with progressively refined queries
+
+Workflow:
+1. web_search 3-4 times with *varied* queries (different keywords,
+   different angles on the same sub-question) to find 15-25
+   candidate URLs across diverse sources. A single search rarely
+   surfaces the best evidence; iterate.
+2. scrape_and_index 4-7 of the most promising URLs. Prefer primary
    sources (official docs, papers, vendor pages, reputable
    journalism) over aggregators. Read across viewpoints when the
    topic is contested.
-3. retrieve_chunks 2–4 times with progressively refined queries to
+3. retrieve_chunks 2-4 times with progressively refined queries to
    pull the most directly relevant context for synthesis. The first
    retrieval often surfaces gaps — follow up with a more targeted
    query.
-4. Synthesise a substantial markdown finding (600–1200 words) that
+4. Synthesise a substantial markdown finding (700-1500 words) that
    actually answers the sub-question with evidence, not a survey.
 
-Stop early ONLY if you genuinely have a complete, well-cited answer
-— not because you're tired of calling tools. A shallow finding here
-makes the whole report shallow.
+Do NOT stop just because you have *something* to say. The whole
+report's depth depends on each sub-agent doing real work.
 
 Your final answer (after the tool calls) must be plain markdown with:
 - A 1–2 sentence summary at the top
@@ -353,9 +370,16 @@ async def _run_subagent_llm(
     sub_agent_id: str,
     sub_question: str,
     model: str,
+    user_id: str | None = None,
 ) -> SubagentResult:
-    """Run a bounded tool-calling loop for one sub-question."""
+    """Run a bounded tool-calling loop for one sub-question.
+
+    ``user_id`` is forwarded as OpenRouter session metadata so every
+    LLM call this loop makes groups under the same session as the
+    planner + writer in the OR dashboard.
+    """
     client = _client()
+    or_extra = openrouter_session_meta(run_id, user_id)
     history: list[dict[str, Any]] = [
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": sub_question},
@@ -369,18 +393,29 @@ async def _run_subagent_llm(
 
     final_text: str = ""
 
+    # Per-tool counters for the iteration-floor check below. The
+    # floor isn't on raw iteration count alone — that lets a model
+    # game it by repeating cheap calls. Require minimum activity in
+    # each *category* (search/scrape/retrieve) so the model can't
+    # claim to be done after spamming the same tool.
+    tool_counts = {"web_search": 0, "scrape_and_index": 0, "retrieve_chunks": 0}
+    MIN_PER_TOOL = {"web_search": 3, "scrape_and_index": 4, "retrieve_chunks": 2}
+
     for iteration in range(MAX_TOOL_ITERATIONS):
         if await is_cancelled(run_id):
             raise asyncio.CancelledError(f"run {run_id} cancelled mid-subagent")
 
         try:
-            response = await client.chat.completions.create(
-                model=model,
-                messages=history,
-                tools=SUBAGENT_TOOLS,
-                tool_choice="auto",
-                temperature=0.3,
-            )
+            llm_kwargs: dict[str, Any] = {
+                "model": model,
+                "messages": history,
+                "tools": SUBAGENT_TOOLS,
+                "tool_choice": "auto",
+                "temperature": 0.3,
+            }
+            if or_extra:
+                llm_kwargs["extra_body"] = or_extra
+            response = await client.chat.completions.create(**llm_kwargs)
         except (APIError, httpx.HTTPError) as exc:
             logger.exception("subagent LLM call failed run=%s sub=%s", run_id, sub_agent_id)
             await _emit_progress(
@@ -404,7 +439,43 @@ async def _run_subagent_llm(
             final_text = msg.content
 
         if not msg.tool_calls:
-            # Model finished without more tool calls — we have the answer.
+            # Iteration floor — push back if the model is finalising
+            # too early. LLMs default to "done" after 3-5 calls; the
+            # whole report's depth depends on each sub-agent doing
+            # the activity counts demanded by the system prompt.
+            below_total = iteration + 1 < MIN_TOOL_ITERATIONS
+            below_per_tool = [
+                k for k, v in MIN_PER_TOOL.items() if tool_counts[k] < v
+            ]
+            if below_total or below_per_tool:
+                missing = ", ".join(
+                    f"{k}: {tool_counts[k]}/{MIN_PER_TOOL[k]}"
+                    for k in below_per_tool
+                ) or "more iterations"
+                logger.info(
+                    "subagent run=%s sub=%s pushed back at iter=%d (need %s)",
+                    run_id, sub_agent_id, iteration + 1, missing,
+                )
+                history.append({
+                    "role": "user",
+                    "content": (
+                        "You stopped too early. This is a deep-research "
+                        "pipeline — keep going until you've satisfied the "
+                        f"minimum activity counts. Current counts: "
+                        f"web_search={tool_counts['web_search']}/3, "
+                        f"scrape_and_index={tool_counts['scrape_and_index']}/4, "
+                        f"retrieve_chunks={tool_counts['retrieve_chunks']}/2. "
+                        "Pick whichever tool you're most under-budget on, "
+                        "use it with a NEW angle/query/url (not a repeat "
+                        "of what you already tried), and continue. Do NOT "
+                        "produce a final answer yet."
+                    ),
+                })
+                # Discard the premature final answer so it doesn't
+                # leak through if the loop later hits MAX_TOOL_ITERATIONS.
+                final_text = ""
+                continue
+            # All minimums satisfied AND model finished — accept the answer.
             break
 
         for tool_call in msg.tool_calls:
@@ -419,6 +490,7 @@ async def _run_subagent_llm(
             if fn_name == "web_search":
                 query = str(fn_args.get("query", ""))
                 tool_result = await _safe_run_web_search(query)
+                tool_counts["web_search"] += 1
                 results = _parse_search_results(tool_result)
                 # Keep the event payload bounded — a Serper response
                 # is up to 10 hits but more than ~6 in the UI feels
@@ -433,6 +505,7 @@ async def _run_subagent_llm(
             elif fn_name == "scrape_and_index":
                 url = str(fn_args.get("url", ""))
                 tool_result = await _safe_scrape_and_index(url)
+                tool_counts["scrape_and_index"] += 1
                 ok, chunk_count = _parse_scrape_status(tool_result)
                 await _emit_progress(
                     run_id,
@@ -451,6 +524,7 @@ async def _run_subagent_llm(
             elif fn_name == "retrieve_chunks":
                 query = str(fn_args.get("query", ""))
                 tool_result, raw_chunks = await _safe_retrieve_chunks(query)
+                tool_counts["retrieve_chunks"] += 1
                 last_retrieved_urls = []
                 preview_chunks: list[dict[str, str]] = []
                 seen_hosts: set[str] = set()
@@ -504,11 +578,14 @@ async def _run_subagent_llm(
             }
         )
         try:
-            response = await client.chat.completions.create(
-                model=model,
-                messages=history,
-                temperature=0.3,
-            )
+            summary_kwargs: dict[str, Any] = {
+                "model": model,
+                "messages": history,
+                "temperature": 0.3,
+            }
+            if or_extra:
+                summary_kwargs["extra_body"] = or_extra
+            response = await client.chat.completions.create(**summary_kwargs)
             final_text = response.choices[0].message.content or final_text
         except (APIError, httpx.HTTPError):
             logger.exception(
@@ -615,6 +692,8 @@ async def run_subagent(
     run_id: str,
     sub_agent_id: str,
     sub_question: str,
+    *,
+    user_id: str | None = None,
 ) -> SubagentResult:
     """Public entry — spawns one sub-agent, persists its row, returns the result.
 
@@ -622,6 +701,9 @@ async def run_subagent(
     can't take down the whole run; the caller (the supervisor) gets a
     SubagentResult either way (with finding text describing the failure
     if the LLM call collapsed).
+
+    ``user_id`` is forwarded to OpenRouter so all sub-agent LLM calls
+    show up in the same OR session as the planner + writer.
     """
     used_stub = _llm_disabled()
     chosen_model = "stub" if used_stub else _model()
@@ -651,7 +733,8 @@ async def run_subagent(
     else:
         try:
             result = await _run_subagent_llm(
-                run_id, sub_agent_id, sub_question, chosen_model
+                run_id, sub_agent_id, sub_question, chosen_model,
+                user_id=user_id,
             )
         except asyncio.CancelledError:
             raise

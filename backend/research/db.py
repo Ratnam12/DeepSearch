@@ -122,3 +122,26 @@ async def close_pool() -> None:
     if _pool is not None:
         await _pool.close()
         _pool = None
+
+
+def openrouter_session_meta(
+    run_id: str | None,
+    user_id: str | None,
+) -> dict[str, str] | None:
+    """Build the ``extra_body`` payload for OpenRouter session tracking.
+
+    Mirrors the pattern in ``backend.agent._stream_completion`` so every
+    LLM call inside a single research run groups under the same OR
+    session in the dashboard — same view we already get for normal chat.
+    Returns ``None`` when there's nothing to send so callers can skip
+    the kwarg entirely.
+    """
+    eb: dict[str, str] = {}
+    if run_id:
+        # Prefix so research sessions don't collide with chat session
+        # ids in the OR dashboard's session list.
+        eb["session_id"] = f"research:{run_id}"
+    if user_id:
+        # OpenRouter caps `user` at 128 chars; Clerk ids are ~32.
+        eb["user"] = str(user_id)[:128]
+    return eb or None

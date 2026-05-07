@@ -38,7 +38,7 @@ import httpx
 from openai import APIError, AsyncOpenAI
 
 from backend.config import get_settings
-from backend.research.db import get_pool
+from backend.research.db import get_pool, openrouter_session_meta
 from backend.research.events import append_event
 
 logger = logging.getLogger("deepsearch.research.writer")
@@ -340,8 +340,15 @@ async def _call_writer_llm(
     findings: list[dict[str, Any]],
     citations: list[Citation],
     model: str,
+    run_id: str | None = None,
+    user_id: str | None = None,
 ) -> str:
-    """One non-streaming call to the pro model — returns markdown."""
+    """One non-streaming call to the pro model — returns markdown.
+
+    ``run_id`` / ``user_id`` are forwarded to OpenRouter so this LLM
+    call groups under the same session as the planner + sub-agent
+    calls in the OR dashboard.
+    """
     client = _client()
 
     user_prompt = (
@@ -356,15 +363,19 @@ async def _call_writer_llm(
         f"the system prompt. Begin with the H1 title."
     )
 
-    response = await client.chat.completions.create(
-        model=model,
-        messages=[
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ],
-        temperature=0.4,
-        max_tokens=4500,
-    )
+        "temperature": 0.4,
+        "max_tokens": 4500,
+    }
+    extra_body = openrouter_session_meta(run_id, user_id)
+    if extra_body:
+        kwargs["extra_body"] = extra_body
+    response = await client.chat.completions.create(**kwargs)
     return (response.choices[0].message.content or "").strip()
 
 
@@ -505,6 +516,7 @@ async def run_writer(run: dict[str, Any]) -> WriterReport:
     ``ResearchReport`` being populated when this returns.
     """
     run_id = str(run["id"])
+    user_id = run.get("userId")
     query = str(run.get("query") or "Research report").strip()
 
     await append_event(run_id, "writer_started", {})
@@ -549,6 +561,8 @@ async def run_writer(run: dict[str, Any]) -> WriterReport:
                     findings=findings,
                     citations=citations,
                     model=model,
+                    run_id=run_id,
+                    user_id=user_id,
                 )
                 _validate_writer_markdown(markdown)
                 report = WriterReport(

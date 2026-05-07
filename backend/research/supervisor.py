@@ -102,6 +102,7 @@ async def run_research(run: dict[str, Any]) -> list[SubagentResult]:
     mid-flight; in that case the partial findings stay on disk.
     """
     run_id = str(run["id"])
+    user_id = run.get("userId")
     plan = await _load_latest_plan(run_id)
     if plan is None or not plan["subQuestions"]:
         logger.warning("run %s entered researching with no plan/sub-questions", run_id)
@@ -137,7 +138,9 @@ async def run_research(run: dict[str, Any]) -> list[SubagentResult]:
             if await is_cancelled(run_id):
                 raise asyncio.CancelledError(run_id)
             try:
-                results[index] = await run_subagent(run_id, sub_id, question)
+                results[index] = await run_subagent(
+                    run_id, sub_id, question, user_id=user_id,
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

@@ -107,9 +107,10 @@ async def _run_planning(run: dict[str, Any]) -> None:
     failure.
     """
     run_id = run["id"]
+    user_id = run.get("userId")
     await _check_cancelled(run_id)
 
-    plan = await create_plan(run["query"])
+    plan = await create_plan(run["query"], run_id=run_id, user_id=user_id)
 
     pool = await get_pool()
     async with pool.acquire() as conn:

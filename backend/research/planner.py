@@ -36,6 +36,7 @@ import httpx
 from openai import APIError, AsyncOpenAI
 
 from backend.config import get_settings
+from backend.research.db import openrouter_session_meta
 
 logger = logging.getLogger("deepsearch.research.planner")
 
@@ -57,7 +58,7 @@ PLAN_SCHEMA: dict[str, Any] = {
         },
         "subQuestions": {
             "type": "array",
-            "minItems": 6,
+            "minItems": 8,
             "maxItems": 12,
             "items": {
                 "type": "object",
@@ -113,14 +114,17 @@ Constraints:
    query as a clear scope, identify the major facets that need to be
    explored, surface obvious ambiguities, and flag anything the user
    might want to clarify.
-2. ``subQuestions`` are 6–12 *independent* questions. Aim for the
-   higher end (8–12) when the topic is broad. Each should be
-   answerable on its own, without depending on another sub-question's
-   findings — if two can't be researched in parallel, merge them.
-   Cover distinct angles (background, current state, technical
-   detail, comparisons, controversies, real-world examples,
-   limitations, future directions, etc.) — repetition is wasted
-   compute. Use ids ``sq1``, ``sq2``, …
+2. ``subQuestions`` are 10–12 *independent* questions — this is the
+   most important constraint. A deep-research run is shallow if the
+   plan only generates 6-7 sub-questions; you should default to 11
+   or 12 unless the topic is genuinely narrow (in which case at
+   least 8). Each should be answerable on its own, without depending
+   on another sub-question's findings — if two can't be researched
+   in parallel, merge them. Cover distinct angles (background,
+   current state, technical detail, comparisons, controversies,
+   real-world examples, limitations, future directions, expert
+   opinions, market/adoption data, etc.) — repetition is wasted
+   compute, but coverage gaps are worse. Use ids ``sq1``, ``sq2``, …
 3. ``outline`` is 4–8 report sections. Section titles should describe
    the section's content, not the user's question. Use ids
    ``s1``, ``s2``, …
@@ -244,9 +248,9 @@ def _validate_plan_payload(payload: dict[str, Any]) -> None:
         raise ValueError("briefMd must be a non-empty string")
 
     sub_qs = payload["subQuestions"]
-    if not isinstance(sub_qs, list) or not (3 <= len(sub_qs) <= 12):
+    if not isinstance(sub_qs, list) or not (3 <= len(sub_qs) <= 14):
         raise ValueError(
-            f"subQuestions must be a list of 3–12 items (got {len(sub_qs) if isinstance(sub_qs, list) else 'non-list'})"
+            f"subQuestions must be a list of 3–14 items (got {len(sub_qs) if isinstance(sub_qs, list) else 'non-list'})"
         )
     for sq in sub_qs:
         if not isinstance(sq, dict):
@@ -266,7 +270,13 @@ def _validate_plan_payload(payload: dict[str, Any]) -> None:
                 raise ValueError(f"outline section missing/empty {k}")
 
 
-async def _call_llm(query: str, model: str) -> dict[str, Any]:
+async def _call_llm(
+    query: str,
+    model: str,
+    *,
+    run_id: str | None = None,
+    user_id: str | None = None,
+) -> dict[str, Any]:
     """One OpenRouter call returning the plan as a dict.
 
     Uses ``response_format={"type": "json_object"}`` and reinforces the
@@ -275,9 +285,9 @@ async def _call_llm(query: str, model: str) -> dict[str, Any]:
     ourselves either way.
     """
     client = _client()
-    response = await client.chat.completions.create(
-        model=model,
-        messages=[
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {
                 "role": "user",
@@ -288,10 +298,14 @@ async def _call_llm(query: str, model: str) -> dict[str, Any]:
                 ),
             },
         ],
-        response_format={"type": "json_object"},
-        temperature=0.4,
-        max_tokens=4500,
-    )
+        "response_format": {"type": "json_object"},
+        "temperature": 0.4,
+        "max_tokens": 4500,
+    }
+    extra_body = openrouter_session_meta(run_id, user_id)
+    if extra_body:
+        kwargs["extra_body"] = extra_body
+    response = await client.chat.completions.create(**kwargs)
     raw = response.choices[0].message.content or "{}"
     try:
         return json.loads(raw)
@@ -303,7 +317,12 @@ async def _call_llm(query: str, model: str) -> dict[str, Any]:
         raise ValueError(f"planner returned non-JSON: {exc}") from exc
 
 
-async def create_plan(query: str) -> ResearchPlan:
+async def create_plan(
+    query: str,
+    *,
+    run_id: str | None = None,
+    user_id: str | None = None,
+) -> ResearchPlan:
     """Produce a research plan for ``query``.
 
     Falls back to :func:`_stub_plan` when the planner is explicitly
@@ -311,6 +330,10 @@ async def create_plan(query: str) -> ResearchPlan:
     fails — the upstream pipeline only blocks on the user's plan
     approval, so a degraded plan still lets the surrounding mechanics
     work.
+
+    ``run_id`` / ``user_id`` are forwarded to OpenRouter so this LLM
+    call groups under the same session as the sub-agent + writer
+    calls in the OR dashboard.
     """
     if _llm_disabled():
         logger.info("planner LLM disabled via env; using stub")
@@ -323,7 +346,7 @@ async def create_plan(query: str) -> ResearchPlan:
 
     model = _planner_model()
     try:
-        payload = await _call_llm(query, model)
+        payload = await _call_llm(query, model, run_id=run_id, user_id=user_id)
         _validate_plan_payload(payload)
     except (APIError, httpx.HTTPError, ValueError) as exc:
         logger.exception("planner LLM call failed; falling back to stub")
