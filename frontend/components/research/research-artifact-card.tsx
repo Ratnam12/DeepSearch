@@ -486,6 +486,32 @@ export function ResearchArtifactCard({
     URL.revokeObjectURL(url);
   }, [report, query]);
 
+  // Done runs open the artifact pane (right-side, full-height,
+  // tabbed Report/Sources/Activity); in-progress runs open the
+  // lighter side sheet so the user can watch the live activity feed
+  // without committing the full-screen real estate. These two hooks
+  // MUST stay above the early-return guards below — React's hook
+  // ordering is positional and putting them after a conditional
+  // return causes "Rendered more hooks than during the previous
+  // render" (#310) on the second render.
+  const { setArtifact } = useArtifact();
+  const onCardClick = useCallback(() => {
+    if (!run) return;
+    if (isDone && report) {
+      setArtifact({
+        documentId: run.id,
+        kind: "research" as const,
+        title: query.length > 80 ? `${query.slice(0, 79)}…` : query,
+        content: report.markdown,
+        status: "idle",
+        isVisible: true,
+        boundingBox: { top: 0, left: 0, width: 0, height: 0 },
+      });
+      return;
+    }
+    setSheetOpen(true);
+  }, [isDone, report, run, query, setArtifact]);
+
   // ── Render ───────────────────────────────────────────────────────────
   if (loadError) {
     return (
@@ -509,27 +535,6 @@ export function ResearchArtifactCard({
     workerStatus !== null &&
     workerStatus.configured === true &&
     workerStatus.running === false;
-
-  // Done runs open the artifact pane (right-side, full-height,
-  // tabbed Report/Sources/Activity); in-progress runs open the
-  // lighter side sheet so the user can watch the live activity feed
-  // without committing the full-screen real estate.
-  const { setArtifact } = useArtifact();
-  const onCardClick = useCallback(() => {
-    if (isDone && report) {
-      setArtifact({
-        documentId: run.id,
-        kind: "research" as const,
-        title: query.length > 80 ? `${query.slice(0, 79)}…` : query,
-        content: report.markdown,
-        status: "idle",
-        isVisible: true,
-        boundingBox: { top: 0, left: 0, width: 0, height: 0 },
-      });
-      return;
-    }
-    setSheetOpen(true);
-  }, [isDone, report, run.id, query, setArtifact]);
 
   return (
     <>
