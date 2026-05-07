@@ -40,6 +40,7 @@ from openai import APIError, AsyncOpenAI
 from backend.config import get_settings
 from backend.research.db import get_pool, openrouter_session_meta
 from backend.research.events import append_event
+from backend.research.subagent import run_subagent
 
 logger = logging.getLogger("deepsearch.research.writer")
 
@@ -507,6 +508,192 @@ async def _persist_report(
     return next_version
 
 
+# ── Self-critique / fact-check ───────────────────────────────────────────
+
+
+# JSON-mode schema for the critique pass. Produces three signals:
+# (1) ready_to_ship — gate for the optional refinement loop;
+# (2) weak_sections — at most one becomes a follow-up sub-agent;
+# (3) unsupported_claims — surfaced as events so the activity feed
+# shows fact-check results, without rewriting the draft.
+_CRITIQUE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "ready_to_ship",
+        "weak_sections",
+        "unsupported_claims",
+        "rationale",
+    ],
+    "properties": {
+        "ready_to_ship": {"type": "boolean"},
+        "weak_sections": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["section_title", "why_weak", "suggested_query"],
+                "properties": {
+                    "section_title": {"type": "string"},
+                    "why_weak": {"type": "string"},
+                    "suggested_query": {
+                        "type": "string",
+                        "description": (
+                            "Self-contained research question another sub-agent "
+                            "could execute to strengthen this section."
+                        ),
+                    },
+                },
+            },
+        },
+        "unsupported_claims": {
+            "type": "array",
+            "maxItems": 6,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["claim", "why_unsupported"],
+                "properties": {
+                    "claim": {"type": "string"},
+                    "why_unsupported": {"type": "string"},
+                },
+            },
+        },
+        "rationale": {"type": "string"},
+    },
+}
+
+
+_CRITIQUE_SYSTEM_PROMPT = """You are a critical reviewer of a deep-research
+report. Read the draft against the available sources and decide:
+
+1. Is the draft ready to ship? Or is one section thin enough that a
+   single follow-up sub-agent could materially strengthen it?
+2. Are there specific claims in the draft that the available sources
+   don't actually support — i.e. fact-check failures the writer
+   should know about?
+
+Be strict but pragmatic. The pipeline allows AT MOST one refinement
+pass, so if you flag weak_sections, pick the single weakest section
+and propose a focused, self-contained ``suggested_query`` for it.
+For unsupported_claims, list the 3-6 most important specific
+factual statements (numbers, dates, attributions, causal claims)
+where the cited sources don't substantiate the claim — not stylistic
+nits, not subjective phrasing.
+
+Return JSON matching the provided schema EXACTLY — no prose around
+it, no markdown fence."""
+
+
+@dataclass(frozen=True)
+class WriterCritique:
+    ready_to_ship: bool
+    weak_sections: list[dict[str, str]]
+    unsupported_claims: list[dict[str, str]]
+    rationale: str
+    model: str
+    used_stub: bool
+
+
+def _stub_critique(reason: str) -> WriterCritique:
+    return WriterCritique(
+        ready_to_ship=True,
+        weak_sections=[],
+        unsupported_claims=[],
+        rationale=f"Critique skipped ({reason}); shipping draft as-is.",
+        model="stub",
+        used_stub=True,
+    )
+
+
+async def _call_critique_llm(
+    *,
+    draft_markdown: str,
+    findings: list[dict[str, Any]],
+    citations: list[Citation],
+    model: str,
+    run_id: str | None,
+    user_id: str | None,
+) -> WriterCritique:
+    """One non-streaming critique call. Stub-falls-back on any error
+    so a critique hiccup can't break the run."""
+    if _llm_disabled():
+        return _stub_critique("LLM disabled")
+
+    settings = get_settings()
+    if not settings.openrouter_api_key:
+        return _stub_critique("no OPENROUTER_API_KEY")
+
+    client = _client()
+    user_prompt = (
+        f"# Available citations (the writer was told to cite only these)\n"
+        f"{_format_citations_for_prompt(citations)}\n\n"
+        f"# Sub-agent findings used to build the draft\n"
+        f"{_format_findings_for_prompt(findings)}\n\n"
+        f"# Draft report to review\n{draft_markdown}\n\n"
+        f"Return JSON matching this schema:\n\n"
+        f"{json.dumps(_CRITIQUE_SCHEMA, indent=2)}"
+    )
+
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": _CRITIQUE_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0.3,
+        "max_tokens": 1800,
+    }
+    extra_body = openrouter_session_meta(run_id, user_id)
+    if extra_body:
+        kwargs["extra_body"] = extra_body
+
+    try:
+        response = await client.chat.completions.create(**kwargs)
+        raw = response.choices[0].message.content or "{}"
+        payload = json.loads(raw)
+        # Light validation — defaults on anything missing rather than
+        # failing the run, since the writer already produced a draft.
+        weak = payload.get("weak_sections") or []
+        unsupported = payload.get("unsupported_claims") or []
+        if not isinstance(weak, list):
+            weak = []
+        if not isinstance(unsupported, list):
+            unsupported = []
+        return WriterCritique(
+            ready_to_ship=bool(payload.get("ready_to_ship", True)),
+            weak_sections=[
+                w for w in weak
+                if isinstance(w, dict)
+                and isinstance(w.get("suggested_query"), str)
+                and w["suggested_query"].strip()
+            ],
+            unsupported_claims=[
+                c for c in unsupported
+                if isinstance(c, dict) and isinstance(c.get("claim"), str)
+            ],
+            rationale=str(payload.get("rationale", "")).strip(),
+            model=model,
+            used_stub=False,
+        )
+    except (APIError, httpx.HTTPError, json.JSONDecodeError, ValueError) as exc:
+        logger.exception("critique call failed; treating draft as ready")
+        return _stub_critique(f"LLM error ({exc.__class__.__name__})")
+
+
+def _critique_model() -> str:
+    """Override hook; defaults to writer model so token budgeting is one knob."""
+    explicit = os.environ.get("RESEARCH_CRITIQUE_MODEL")
+    if explicit:
+        return explicit
+    return _writer_model()
+
+
+# ── Phase 4 entry point ──────────────────────────────────────────────────
+
+
 async def run_writer(run: dict[str, Any]) -> WriterReport:
     """Phase-4 entry point. Read inputs, dedup sources, write a report,
     persist, and emit lifecycle events.
@@ -595,4 +782,119 @@ async def run_writer(run: dict[str, Any]) -> WriterReport:
             "stub": report.used_stub,
         },
     )
+
+    # ── Self-critique + optional one-shot refinement ────────────────────
+    # Skipped when the draft itself was a stub (nothing for the critic
+    # to usefully evaluate) or when the critique LLM is disabled.
+    if not report.used_stub and not _llm_disabled():
+        await append_event(run_id, "writer_critique_started", {})
+        critique = await _call_critique_llm(
+            draft_markdown=report.markdown,
+            findings=findings,
+            citations=citations,
+            model=_critique_model(),
+            run_id=run_id,
+            user_id=user_id,
+        )
+        await append_event(
+            run_id,
+            "writer_critique_complete",
+            {
+                "ready_to_ship": critique.ready_to_ship,
+                "weakSectionCount": len(critique.weak_sections),
+                "unsupportedClaimCount": len(critique.unsupported_claims),
+                "rationale": critique.rationale,
+                "model": critique.model,
+                "stub": critique.used_stub,
+            },
+        )
+
+        # Surface fact-check signal as discrete events so the activity
+        # feed can render them per-claim. Doesn't modify the draft —
+        # just transparency for the user.
+        for claim in critique.unsupported_claims:
+            await append_event(
+                run_id,
+                "claim_unsupported",
+                {
+                    "claim": str(claim.get("claim", "")).strip()[:400],
+                    "reason": str(claim.get("why_unsupported", "")).strip()[:300],
+                },
+            )
+
+        # Single refinement cycle: dispatch ONE follow-up sub-agent
+        # for the weakest flagged section, then re-run the writer
+        # with the augmented findings. The hard cap matches the
+        # paper's recommendation that unbounded critique loops are
+        # where runaway cost comes from.
+        if (
+            not critique.ready_to_ship
+            and critique.weak_sections
+            and not critique.used_stub
+        ):
+            weak = critique.weak_sections[0]
+            refine_query = str(weak.get("suggested_query", "")).strip()
+            section_title = str(weak.get("section_title", "")).strip() or "(unknown)"
+            if refine_query:
+                refine_id = "refine-1"
+                await append_event(
+                    run_id,
+                    "writer_refine_dispatch",
+                    {
+                        "section": section_title,
+                        "query": refine_query,
+                        "reason": str(weak.get("why_weak", "")).strip(),
+                    },
+                )
+                try:
+                    await run_subagent(
+                        run_id, refine_id, refine_query, user_id=user_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "refinement sub-agent failed run=%s; keeping original draft",
+                        run_id,
+                    )
+                else:
+                    # Re-load findings (now includes the refinement
+                    # sub-agent's row) and re-dedup sources before
+                    # the second writer pass.
+                    brief_md, outline, findings = await _load_inputs(run_id)
+                    citations = await dedup_sources(run_id)
+                    try:
+                        refined_markdown = await _call_writer_llm(
+                            query=query,
+                            brief_md=brief_md,
+                            outline=outline,
+                            findings=findings,
+                            citations=citations,
+                            model=_writer_model(),
+                            run_id=run_id,
+                            user_id=user_id,
+                        )
+                        _validate_writer_markdown(refined_markdown)
+                    except (APIError, httpx.HTTPError, ValueError):
+                        logger.exception(
+                            "refined writer call failed; keeping original draft"
+                        )
+                    else:
+                        report = WriterReport(
+                            markdown=refined_markdown,
+                            sections=_extract_sections(refined_markdown),
+                            citations=citations,
+                            model=report.model,
+                            used_stub=False,
+                        )
+                        version = await _persist_report(run_id, report)
+                        await append_event(
+                            run_id,
+                            "report_refined",
+                            {
+                                "version": version,
+                                "characters": len(report.markdown),
+                                "citationCount": len(citations),
+                                "section": section_title,
+                            },
+                        )
+
     return report

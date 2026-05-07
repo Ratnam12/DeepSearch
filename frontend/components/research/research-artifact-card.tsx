@@ -407,6 +407,7 @@ export function ResearchArtifactCard({
         }
         case "sources_deduped":
         case "report_written":
+        case "report_refined":
         case "run_completed":
           refreshSnapshot();
           break;
@@ -430,10 +431,18 @@ export function ResearchArtifactCard({
       "subagent_progress",
       "subagent_finished",
       "subagent_failed",
+      "evaluation_started",
+      "evaluation_complete",
+      "gap_dispatch",
       "research_complete",
       "writer_started",
       "sources_deduped",
       "report_written",
+      "writer_critique_started",
+      "writer_critique_complete",
+      "claim_unsupported",
+      "writer_refine_dispatch",
+      "report_refined",
       "run_completed",
       "run_failed",
       "run_cancelled",
@@ -1402,11 +1411,123 @@ export function buildActivitySteps(
         }
         break;
       }
+      case "evaluation_started":
+        steps.push({
+          icon: "spark",
+          kind: "phase",
+          label: "Reviewing what's been found so far",
+          ts: evt.ts,
+        });
+        break;
+      case "evaluation_complete": {
+        const ready = Boolean(evt.payload?.ready_for_writer);
+        const gapCount =
+          typeof evt.payload?.gapCount === "number"
+            ? (evt.payload.gapCount as number)
+            : 0;
+        const rationale =
+          typeof evt.payload?.rationale === "string"
+            ? (evt.payload.rationale as string)
+            : "";
+        const label = ready
+          ? `Coverage looks solid — proceeding to the report${
+              rationale ? ` · ${rationale}` : ""
+            }`
+          : `Gaps found: ${gapCount} angle${gapCount === 1 ? "" : "s"} need${
+              gapCount === 1 ? "s" : ""
+            } more research${rationale ? ` · ${rationale}` : ""}`;
+        steps.push({
+          icon: "spark",
+          kind: "phase",
+          label: truncate(label, 220),
+          ts: evt.ts,
+        });
+        break;
+      }
+      case "gap_dispatch": {
+        const count =
+          typeof evt.payload?.subagentCount === "number"
+            ? (evt.payload.subagentCount as number)
+            : 0;
+        steps.push({
+          icon: "globe",
+          kind: "phase",
+          label: `Going deeper on ${count} gap${count === 1 ? "" : "s"}`,
+          ts: evt.ts,
+        });
+        break;
+      }
       case "writer_started":
         steps.push({
           icon: "file",
           kind: "phase",
           label: "Writing the report",
+          ts: evt.ts,
+        });
+        break;
+      case "writer_critique_started":
+        steps.push({
+          icon: "spark",
+          kind: "phase",
+          label: "Reviewing the draft for thin sections and unsupported claims",
+          ts: evt.ts,
+        });
+        break;
+      case "writer_critique_complete": {
+        const ready = Boolean(evt.payload?.ready_to_ship);
+        const unsupported =
+          typeof evt.payload?.unsupportedClaimCount === "number"
+            ? (evt.payload.unsupportedClaimCount as number)
+            : 0;
+        const label = ready
+          ? `Draft passes review${
+              unsupported > 0
+                ? ` · ${unsupported} claim${
+                    unsupported === 1 ? "" : "s"
+                  } flagged for transparency`
+                : ""
+            }`
+          : "Draft needs one more pass — refining a thin section";
+        steps.push({
+          icon: "spark",
+          kind: "phase",
+          label: truncate(label, 220),
+          ts: evt.ts,
+        });
+        break;
+      }
+      case "claim_unsupported": {
+        const claim =
+          typeof evt.payload?.claim === "string"
+            ? (evt.payload.claim as string)
+            : "";
+        if (!claim) break;
+        steps.push({
+          icon: "spark",
+          kind: "phase",
+          label: `Flagged unsupported claim: "${truncate(claim, 140)}"`,
+          ts: evt.ts,
+        });
+        break;
+      }
+      case "writer_refine_dispatch": {
+        const section =
+          typeof evt.payload?.section === "string"
+            ? (evt.payload.section as string)
+            : "a section";
+        steps.push({
+          icon: "globe",
+          kind: "phase",
+          label: `Strengthening "${truncate(section, 100)}" with a follow-up search`,
+          ts: evt.ts,
+        });
+        break;
+      }
+      case "report_refined":
+        steps.push({
+          icon: "check",
+          kind: "phase",
+          label: "Report updated with refinement",
           ts: evt.ts,
         });
         break;
