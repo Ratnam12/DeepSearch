@@ -2,8 +2,7 @@ import type { UIMessageStreamWriter } from "ai";
 import { codeDocumentHandler } from "@/artifacts/code/server";
 import { sheetDocumentHandler } from "@/artifacts/sheet/server";
 import { textDocumentHandler } from "@/artifacts/text/server";
-import type { ArtifactKind } from "@/components/chat/artifact";
-import { saveDocument } from "../db/queries";
+import { type DocumentKind, saveDocument } from "../db/queries";
 import type { Document } from "../db/schema";
 import type { ChatMessage } from "../types";
 
@@ -18,7 +17,7 @@ export type ArtifactSession = {
 export type SaveDocumentProps = {
   id: string;
   title: string;
-  kind: ArtifactKind;
+  kind: DocumentKind;
   content: string;
   userId: string;
 };
@@ -39,13 +38,13 @@ export type UpdateDocumentCallbackProps = {
   modelId: string;
 };
 
-export type DocumentHandler<T = ArtifactKind> = {
+export type DocumentHandler<T extends DocumentKind = DocumentKind> = {
   kind: T;
   onCreateDocument: (args: CreateDocumentCallbackProps) => Promise<void>;
   onUpdateDocument: (args: UpdateDocumentCallbackProps) => Promise<void>;
 };
 
-export function createDocumentHandler<T extends ArtifactKind>(config: {
+export function createDocumentHandler<T extends DocumentKind>(config: {
   kind: T;
   onCreateDocument: (params: CreateDocumentCallbackProps) => Promise<string>;
   onUpdateDocument: (params: UpdateDocumentCallbackProps) => Promise<string>;

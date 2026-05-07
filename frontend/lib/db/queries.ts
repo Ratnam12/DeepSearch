@@ -287,6 +287,13 @@ export async function getVotesByChatId({ id }: { id: string }) {
   }
 }
 
+// `Document.kind` only allows the four DB-backed artifact kinds —
+// research artifacts are persisted to ResearchRun/ResearchReport
+// tables, never to `document`. Excluding "research" at the type
+// level both reflects that invariant and lets Drizzle's narrower
+// schema type accept the insert.
+export type DocumentKind = Exclude<ArtifactKind, "research">;
+
 export async function saveDocument({
   id,
   title,
@@ -296,7 +303,7 @@ export async function saveDocument({
 }: {
   id: string;
   title: string;
-  kind: ArtifactKind;
+  kind: DocumentKind;
   content: string;
   userId: string;
 }) {
@@ -415,7 +422,7 @@ async function _copyArtifactDocuments(
         await saveDocument({
           id: data.id,
           title: data.title,
-          kind: data.kind as ArtifactKind,
+          kind: data.kind as DocumentKind,
           content: data.content,
           userId,
         });

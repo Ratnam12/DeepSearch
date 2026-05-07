@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { auth } from "@clerk/nextjs/server";
-import type { ArtifactKind } from "@/components/chat/artifact";
 import {
+  type DocumentKind,
   deleteDocumentsByIdAfterTimestamp,
   getDocumentsById,
   getDocumentsByUserAndId,
@@ -62,7 +62,7 @@ export async function POST(request: Request) {
 
   let content: string;
   let title: string;
-  let kind: ArtifactKind;
+  let kind: DocumentKind;
   let isManualEdit: boolean | undefined;
 
   try {

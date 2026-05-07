@@ -99,9 +99,15 @@ export function DocumentPreview({
     );
   }
 
+  // Research artifacts aren't backed by Document rows — they have
+  // their own preview component (ResearchPreviewCard) and never reach
+  // this code path at runtime. The `kind !== "research"` guard is
+  // here purely to narrow `artifact.kind` from the widened
+  // `ArtifactKind` union back down to the document-backed kinds so
+  // the synthetic Document literal typechecks.
   const document: Document | null = previewDocument
     ? previewDocument
-    : artifact.status === "streaming"
+    : artifact.status === "streaming" && artifact.kind !== "research"
       ? {
           title: artifact.title,
           kind: artifact.kind,

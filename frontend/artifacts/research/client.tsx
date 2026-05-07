@@ -8,7 +8,7 @@ import {
   Link2Icon,
   Loader2Icon,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Artifact } from "@/components/chat/create-artifact";
 import { ResearchReportRenderer } from "@/components/research/report-renderer";
@@ -247,7 +247,7 @@ function TabButton({
   onClick,
 }: {
   active: boolean;
-  icon: React.ReactNode;
+  icon: ReactNode;
   label: string;
   onClick: () => void;
 }) {
