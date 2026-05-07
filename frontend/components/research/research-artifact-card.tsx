@@ -792,7 +792,11 @@ function ResearchSheet({
         side="right"
       >
         <SheetHeader className="space-y-3 border-border border-b px-6 py-5">
-          <div className="flex items-center justify-between gap-3">
+          {/* pr-10 reserves space for the SheetContent's built-in
+              close X (top-right). Without it, our right-aligned
+              action buttons (Copy/Download when done, Stop while
+              running) sit immediately next to the X — easy misclick. */}
+          <div className="flex items-center justify-between gap-3 pr-10">
             <SheetTitle className="flex items-center gap-2 text-[15px]">
               <PreviewIcon
                 isCancelled={isCancelled}
@@ -828,20 +832,25 @@ function ResearchSheet({
                 </Button>
               </div>
             )}
-            {!isDone && !isFailed && !isCancelled && (
-              <Button
-                className="h-8 px-2.5 text-xs"
-                onClick={onCancel}
-                size="sm"
-                variant="ghost"
-              >
-                Stop
-              </Button>
-            )}
           </div>
           <p className="text-[13px] text-muted-foreground leading-relaxed">
             {query}
           </p>
+          {!isDone && !isFailed && !isCancelled && (
+            // Stop is moved out of the top action row so it can't be
+            // mistaken for the close X. It's a tertiary destructive
+            // action — small, muted, and labelled unambiguously.
+            <div className="flex">
+              <button
+                className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[11.5px] text-muted-foreground/70 transition-colors hover:text-destructive"
+                onClick={onCancel}
+                type="button"
+              >
+                <XCircleIcon className="size-3.5" />
+                Stop research
+              </button>
+            </div>
+          )}
         </SheetHeader>
 
         <div className="flex-1 overflow-y-auto">
