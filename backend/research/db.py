@@ -13,6 +13,8 @@ import os
 from pathlib import Path
 from typing import Optional
 
+import asyncio
+
 import asyncpg
 
 logger = logging.getLogger("deepsearch.research.db")
@@ -105,15 +107,48 @@ def _normalize_pg_url(url: str) -> str:
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Return the lazily-initialised asyncpg pool for this process."""
+    """Return the lazily-initialised asyncpg pool for this process.
+
+    Wrapped in a retry loop so a Neon cold-start (suspended compute
+    waking on first connect) doesn't crash the worker on boot. Each
+    attempt gets a generous ``timeout`` because Neon's wake-from-
+    suspend can take 30-60s on its own; the default 60s
+    ``connect_timeout`` would race the wake. We give it 90s per try
+    and retry up to 3 times — enough headroom for any single wake
+    event without holding worker startup hostage.
+    """
     global _pool
-    if _pool is None:
-        url = _normalize_pg_url(_resolve_database_url())
-        # ``min_size=1, max_size=10`` is plenty for a single worker
-        # process running ~3 sub-agents in parallel plus pg_notify.
-        # ``ssl`` is auto-negotiated from the URL's sslmode parameter.
-        _pool = await asyncpg.create_pool(url, min_size=1, max_size=10)
-    return _pool
+    if _pool is not None:
+        return _pool
+
+    url = _normalize_pg_url(_resolve_database_url())
+    # ``min_size=1, max_size=10`` is plenty for a single worker
+    # process running ~3 sub-agents in parallel plus pg_notify.
+    # ``ssl`` is auto-negotiated from the URL's sslmode parameter.
+    last_exc: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            _pool = await asyncpg.create_pool(
+                url,
+                min_size=1,
+                max_size=10,
+                # Per-connection establish timeout. asyncpg uses
+                # this for each handshake inside create_pool; 90s
+                # covers a full Neon cold-start.
+                timeout=90,
+            )
+            return _pool
+        except (asyncio.TimeoutError, asyncpg.exceptions.ConnectionFailureError) as exc:
+            last_exc = exc
+            logger.warning(
+                "asyncpg pool init attempt %d/3 timed out (likely Neon cold-start); retrying",
+                attempt,
+            )
+            await asyncio.sleep(2)
+    # Exhausted retries — re-raise the last failure so the worker's
+    # done-callback can surface it via /api/v1/research-worker-status.
+    assert last_exc is not None
+    raise last_exc
 
 
 async def close_pool() -> None:
