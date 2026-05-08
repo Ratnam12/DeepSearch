@@ -52,6 +52,18 @@ The LLM is only allowed to state things that are present in the retrieved chunks
 - **Auto-promotion**: if the model answers at length but forgets to call `create_artifact`, the backend automatically promotes the streamed answer into a text artifact so the side panel is always populated for substantive responses.
 - **Clickable inline citations**: the backend rewrites `[1]`, `[2]` markers in the answer into markdown links and appends a `## Sources` section at the bottom if the model forgot one.
 
+### Deep research mode
+
+A second mode for queries that need real depth. Toggle **DeepSearch** in the input bar and the request goes through a multi-agent pipeline instead of the single-agent chat flow above. A typical run takes 10 to 20 minutes and produces a 1500 to 3000 word cited report. The pipeline is `plan → research → evaluate → research again (if gaps) → write → critique → refine (if weak) → done`:
+
+- **Planner**: turns the query into a brief, 8 to 12 parallel sub-questions, and an outline.
+- **Sub-agents (wave 1)**: one ReAct loop per sub-question, dispatched in parallel up to `RESEARCH_SUBAGENT_CONCURRENCY = 4`. Each loop has three tools — `web_search`, `scrape_and_index`, `retrieve_chunks` — and a hard activity floor of at least 3 searches, 4 scrapes, and 2 retrievals before the model is allowed to finalize. Findings are 700 to 1500 word markdown blocks with bracketed citations.
+- **Evaluator**: an LLM critic reads every wave-1 finding against the brief and decides whether to ship to the writer or dispatch a focused second wave on gap questions. Capped at `RESEARCH_MAX_WAVES = 2`.
+- **Writer**: drafts a single grounded report from all sub-agent findings and the deduped source pool.
+- **Critique + refinement**: a second LLM pass reviews the draft, flags claims unsupported by any retrieved source (each becomes a `claim_unsupported` event the user sees in the activity feed), and optionally dispatches one more sub-agent to strengthen a thin section before re-drafting. Capped at one refinement cycle.
+
+All four LLM call sites (planner, sub-agents, evaluator, writer plus critique) tag their OpenRouter requests with `session_id: research:<runId>` so a single run shows up as one grouped session in the OpenRouter dashboard for cost and performance analysis.
+
 ### Auth, history, and storage
 
 - **Clerk authentication** for sign-in, sign-up, and protected routes.
@@ -462,4 +474,4 @@ requirements.txt            Python dependencies
 
 MIT. See the LICENSE files in `frontend/` and `chatbot/`.
 
-Built by [Ratnam Singh](https://github.com/ratnamcodes).
+Built by [Ratnam](https://github.com/ratnamcodes).
