@@ -54,7 +54,7 @@ The LLM is only allowed to state things that are present in the retrieved chunks
 
 ### Deep research mode
 
-A second mode for queries that need real depth. Toggle **DeepSearch** in the input bar and the request goes through a multi-agent pipeline instead of the single-agent chat flow above. A typical run takes 10 to 20 minutes and produces a 1500 to 3000 word cited report. The pipeline is `plan → research → evaluate → research again (if gaps) → write → critique → refine (if weak) → done`:
+A second mode for queries that need real depth. Toggle **DeepSearch** in the input bar and the request goes through a multi-agent pipeline instead of the single-agent chat flow above. A typical run takes 10 to 20 minutes and produces a fully-cited long-form report. The pipeline is `plan → research → evaluate → research again (if gaps) → write → critique → refine (if weak) → done`:
 
 - **Planner**: turns the query into a brief, 8 to 12 parallel sub-questions, and an outline.
 - **Sub-agents (wave 1)**: one ReAct loop per sub-question, dispatched in parallel up to `RESEARCH_SUBAGENT_CONCURRENCY = 4`. Each loop has three tools — `web_search`, `scrape_and_index`, `retrieve_chunks` — and a hard activity floor of at least 3 searches, 4 scrapes, and 2 retrievals before the model is allowed to finalize. Findings are 700 to 1500 word markdown blocks with bracketed citations.

@@ -94,7 +94,11 @@ Output requirements:
 5. Faithfully represent the sub-agent findings. Don't fabricate facts
    that aren't in the findings. If sub-agents disagreed on a point,
    note the disagreement.
-6. Length: aim for 800–1800 words. Better tight than padded.
+6. Length: as long as the content genuinely needs. Don't pad, but
+   don't artificially truncate either — a deep-research report with
+   8-12 sub-questions, multiple comparison tables, and a milestone
+   roadmap typically runs 2000-4000 words and that's fine. Stop when
+   the brief is fully covered, not when you hit a word count.
 7. No markdown code fences around the entire response. Just the
    report content."""
 
@@ -371,8 +375,14 @@ async def _call_writer_llm(
             {"role": "user", "content": user_prompt},
         ],
         "temperature": 0.4,
-        "max_tokens": 4500,
     }
+    # No max_tokens cap — the writer's whole job is to produce a
+    # complete report, and a hard cap chops markdown tables /
+    # roadmaps mid-sentence (the cap is per-token, not per-section,
+    # so structured outputs blow through it faster than prose). The
+    # model's own context-window ceiling is the real limit; if a
+    # specific deployment ever needs a budget guard, override via
+    # the standard OpenRouter request params.
     extra_body = openrouter_session_meta(run_id, user_id)
     if extra_body:
         kwargs["extra_body"] = extra_body
