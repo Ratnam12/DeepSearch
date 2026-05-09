@@ -27,6 +27,11 @@ from backend.agent import normalise_messages_for_openrouter, run_chat
 from backend.cache import cache_lookup, cache_store
 from backend.config import get_settings
 from backend.research.db import close_pool as close_research_pool
+from backend.research.rewrite import (
+    RewriteRequest,
+    RewriteResponse,
+    rewrite_for_research,
+)
 from backend.research.worker import main_loop as research_worker_main_loop
 from backend.router import api_router
 
@@ -693,6 +698,22 @@ def build_app() -> FastAPI:
         crashed on startup, set DATABASE_URL on Railway".
         """
         return get_research_worker_state()
+
+    @app.post(
+        "/api/v1/research/rewrite-query",
+        response_model=RewriteResponse,
+    )
+    async def research_rewrite_query(request: RewriteRequest) -> RewriteResponse:
+        """Rewrite a DeepSearch follow-up into a self-contained question.
+
+        Called by the Next.js chat route before persisting a research
+        run so the planner sees a query with every entity and pronoun
+        resolved (e.g. "give me inventions done by him" → "give me
+        inventions done by Galileo Galilei"). One Flash call; returns
+        the original query unchanged on any failure or when there's no
+        prior context to draw from.
+        """
+        return await rewrite_for_research(request.query, request.history)
 
     @app.post("/chat")
     async def chat(request: ChatRequest) -> StreamingResponse:

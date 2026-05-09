@@ -170,6 +170,70 @@ async function inlineMessageAttachments(
   );
 }
 
+// Cap the number of prior turns we ship to the rewrite endpoint. The
+// last few exchanges are almost always enough to resolve a pronoun or
+// topic reference, and capping keeps the Flash call cheap.
+const REWRITE_HISTORY_TURN_CAP = 8;
+const REWRITE_TIMEOUT_MS = 7_000;
+
+type RewriteHistoryMessage = { role: string; content: string };
+
+function historyForRewrite(messages: ChatMessage[]): RewriteHistoryMessage[] {
+  // Take everything *before* the latest message — the rewrite prompt
+  // pairs that prior context with the new follow-up question.
+  const prior = messages.slice(0, -1);
+  const trimmed = prior.slice(-REWRITE_HISTORY_TURN_CAP);
+  const out: RewriteHistoryMessage[] = [];
+  for (const message of trimmed) {
+    if (message.role !== "user" && message.role !== "assistant") {
+      continue;
+    }
+    const text = (message.parts ?? [])
+      .filter((part) => part.type === "text")
+      .map((part) => (part as { text?: string }).text ?? "")
+      .join(" ")
+      .trim();
+    if (text) {
+      out.push({ role: message.role, content: text });
+    }
+  }
+  return out;
+}
+
+async function rewriteResearchQuery({
+  query,
+  history,
+}: {
+  query: string;
+  history: RewriteHistoryMessage[];
+}): Promise<string> {
+  if (history.length === 0) {
+    return query;
+  }
+  try {
+    const response = await fetch(
+      `${BACKEND_URL}/api/v1/research/rewrite-query`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, history }),
+        signal: AbortSignal.timeout(REWRITE_TIMEOUT_MS),
+      }
+    );
+    if (!response.ok) {
+      console.error("rewrite-query non-OK", { status: response.status });
+      return query;
+    }
+    const payload = (await response.json()) as { query?: string };
+    return typeof payload.query === "string" && payload.query
+      ? payload.query
+      : query;
+  } catch (err) {
+    console.error("rewrite-query failed", { err });
+    return query;
+  }
+}
+
 async function resolveSelectedModel(modelId: string): Promise<string> {
   // "auto" isn't an OpenRouter model id — it's the sentinel that tells the
   // FastAPI agent to fall through to its complexity-based router. Pass it
@@ -270,14 +334,24 @@ export async function POST(request: Request) {
         "DeepSearch needs a text query to start a run"
       ).toResponse();
     }
-    const run = await createResearchRun({ userId, query: text });
+    // The DeepSearch worker only sees ResearchRun.query — it has no
+    // access to the surrounding chat thread. So a follow-up like "give
+    // me inventions done by him" reaches the planner with no referent.
+    // Rewrite the follow-up into a self-contained question (one Flash
+    // call on the FastAPI side; falls back to the original query on
+    // any failure) before persisting the run.
+    const standaloneQuery = await rewriteResearchQuery({
+      query: text,
+      history: historyForRewrite(uiMessages),
+    });
+    const run = await createResearchRun({ userId, query: standaloneQuery });
     const assistantMessageId = generateUUID();
     const partId = `research-${run.id}`;
     const assistantParts = [
       {
         type: "data-research",
         id: partId,
-        data: { runId: run.id, query: text },
+        data: { runId: run.id, query: standaloneQuery },
       },
     ];
     await saveMessages({
@@ -305,7 +379,7 @@ export async function POST(request: Request) {
         assistantMessageId,
         partId,
         runId: run.id,
-        query: text,
+        query: standaloneQuery,
       }),
       {
         headers: {
