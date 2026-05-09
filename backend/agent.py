@@ -25,7 +25,7 @@ from backend.embedder import embed, embed_batch
 from backend.retriever import hybrid_search, retrieve_chunks, upsert_chunks
 from backend.scraper import scrape_url, scrape_urls
 from backend.llm import synthesise_answer
-from backend.model_router import FLASH, log_cost, route_model
+from backend.model_router import FLASH, llm_route_model, log_cost, route_model
 from backend.security import sanitize
 from backend.dspy_modules import generate_candidate as _dspy_candidate
 
@@ -602,11 +602,18 @@ async def run_chat(
     # now. The multi-candidate code is still in _agent_loop and can be
     # re-enabled behind a `deep_research` flag later.
     score = 1
-    chosen_model = (
-        model
-        if model
-        else (route_model(question_text) if question_text else FLASH)
-    )
+    # The frontend sends the literal string "auto" when the user picks the
+    # Auto option from the model dropdown — fall through to the LLM-based
+    # router (one cheap Flash call → label → curated chat model). The
+    # llm_route_model helper falls back to the sync heuristic on any
+    # classifier failure, so this path always returns a usable model id.
+    explicit_model = model if model and model.lower() != "auto" else None
+    if explicit_model:
+        chosen_model = explicit_model
+    elif question_text:
+        chosen_model = await llm_route_model(question_text)
+    else:
+        chosen_model = FLASH
 
     async for event in _agent_loop(
         history,

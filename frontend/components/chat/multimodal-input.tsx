@@ -9,6 +9,7 @@ import {
   BrainIcon,
   EyeIcon,
   LockIcon,
+  SparklesIcon,
   TelescopeIcon,
   WrenchIcon,
 } from "lucide-react";
@@ -39,9 +40,12 @@ import {
   ModelSelectorTrigger,
 } from "@/components/ai-elements/model-selector";
 import {
+  AUTO_MODEL_ID,
+  autoModel,
   type ChatModel,
   chatModels,
   DEFAULT_CHAT_MODEL,
+  isAutoModelId,
   type ModelCapabilities,
 } from "@/lib/ai/models";
 import type { Attachment, ChatMessage } from "@/lib/types";
@@ -926,19 +930,21 @@ function PureModelSelectorCompact({
   const dynamicModels: ChatModel[] | undefined = modelsData?.models;
   const activeModels = dynamicModels ?? chatModels;
 
-  const selectedModel =
-    activeModels.find((m: ChatModel) => m.id === selectedModelId) ??
-    activeModels.find((m: ChatModel) => m.id === DEFAULT_CHAT_MODEL) ??
-    activeModels[0];
+  const isAuto = isAutoModelId(selectedModelId);
+  const selectedModel = isAuto
+    ? autoModel
+    : (activeModels.find((m: ChatModel) => m.id === selectedModelId) ??
+      activeModels.find((m: ChatModel) => m.id === DEFAULT_CHAT_MODEL) ??
+      activeModels[0]);
   const [provider] = selectedModel.id.split("/");
 
   useEffect(() => {
-    if (!(dynamicModels && selectedModel.id !== selectedModelId)) {
+    if (isAuto || !(dynamicModels && selectedModel.id !== selectedModelId)) {
       return;
     }
     onModelChange?.(selectedModel.id);
     setCookie("chat-model", selectedModel.id);
-  }, [dynamicModels, onModelChange, selectedModel.id, selectedModelId]);
+  }, [dynamicModels, isAuto, onModelChange, selectedModel.id, selectedModelId]);
 
   return (
     <ModelSelector onOpenChange={setOpen} open={open}>
@@ -948,13 +954,45 @@ function PureModelSelectorCompact({
           data-testid="model-selector"
           variant="ghost"
         >
-          {provider && <ModelSelectorLogo provider={provider} />}
+          {isAuto ? (
+            <SparklesIcon className="size-3.5" />
+          ) : (
+            provider && <ModelSelectorLogo provider={provider} />
+          )}
           <ModelSelectorName>{selectedModel.name}</ModelSelectorName>
         </Button>
       </ModelSelectorTrigger>
       <ModelSelectorContent>
         <ModelSelectorInput placeholder="Search models..." />
         <ModelSelectorList>
+          <ModelSelectorGroup heading="Smart routing">
+            <ModelSelectorItem
+              className={cn(
+                "flex w-full",
+                isAuto && "border-b border-dashed border-foreground/50"
+              )}
+              key={AUTO_MODEL_ID}
+              onSelect={() => {
+                onModelChange?.(AUTO_MODEL_ID);
+                setCookie("chat-model", AUTO_MODEL_ID);
+                setOpen(false);
+                setTimeout(() => {
+                  document
+                    .querySelector<HTMLTextAreaElement>(
+                      "[data-testid='multimodal-input']"
+                    )
+                    ?.focus();
+                }, 50);
+              }}
+              value={AUTO_MODEL_ID}
+            >
+              <SparklesIcon className="size-3.5" />
+              <ModelSelectorName>{autoModel.name}</ModelSelectorName>
+              <span className="ml-auto truncate text-[11px] text-muted-foreground/70">
+                Picks the best model per query
+              </span>
+            </ModelSelectorItem>
+          </ModelSelectorGroup>
           {(() => {
             const curatedIds = new Set(chatModels.map((m) => m.id));
             const allModels = activeModels;

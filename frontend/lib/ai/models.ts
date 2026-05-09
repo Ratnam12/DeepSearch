@@ -7,6 +7,27 @@
 
 export const DEFAULT_CHAT_MODEL = "openai/gpt-5.5";
 
+// Sentinel id for the "let the agent route" option in the model dropdown.
+// Forwarded verbatim to FastAPI, which runs an LLM-classifier router
+// (backend/model_router.py::llm_route_model — one cheap Flash call to
+// label the query, then maps the label to a curated chat model). Falls
+// back to a three-rule heuristic (Flash vs Pro) if the classifier
+// fails. Not an OpenRouter model id, so the chat route must
+// short-circuit it before the catalogue lookup.
+export const AUTO_MODEL_ID = "auto";
+
+export function isAutoModelId(modelId: string | null | undefined): boolean {
+  return typeof modelId === "string" && modelId.toLowerCase() === AUTO_MODEL_ID;
+}
+
+export const autoModel: ChatModel = {
+  id: AUTO_MODEL_ID,
+  name: "Auto",
+  provider: "auto",
+  description:
+    "DeepSearch routes each query to the best model — Flash for lookups, GPT-5.5 for research and code, Opus for citations, Gemini for long context, Sonnet for long-form writing",
+};
+
 export const titleModel = {
   id: "openai/gpt-5.4-mini",
   name: "GPT-5.4 mini",

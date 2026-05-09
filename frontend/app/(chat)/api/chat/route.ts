@@ -4,8 +4,10 @@ import { ipAddress } from "@vercel/functions";
 import { convertToModelMessages } from "ai";
 import { after } from "next/server";
 import {
+  AUTO_MODEL_ID,
   DEFAULT_CHAT_MODEL,
   getOpenRouterModelCatalogue,
+  isAutoModelId,
 } from "@/lib/ai/models";
 import {
   deleteChatById,
@@ -169,6 +171,13 @@ async function inlineMessageAttachments(
 }
 
 async function resolveSelectedModel(modelId: string): Promise<string> {
+  // "auto" isn't an OpenRouter model id — it's the sentinel that tells the
+  // FastAPI agent to fall through to its complexity-based router. Pass it
+  // through verbatim so the catalogue check below doesn't coerce it to the
+  // default model.
+  if (isAutoModelId(modelId)) {
+    return AUTO_MODEL_ID;
+  }
   const catalogue = await getOpenRouterModelCatalogue();
   const isAvailable = catalogue.models.some((model) => model.id === modelId);
   return isAvailable ? modelId : DEFAULT_CHAT_MODEL;
