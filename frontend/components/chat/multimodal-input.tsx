@@ -173,14 +173,11 @@ function PureMultimodalInput({
   );
 
   // DeepSearch toggle: when on, the next submit creates a research run
-  // (POST /api/research) and navigates to /research/<id> instead of
-  // sending a chat message. Sticky across reloads — Gemini-style — so
-  // a user who's in research mode stays there until they explicitly
-  // turn it off.
-  const [deepSearchEnabled, setDeepSearchEnabled] = useLocalStorage(
-    "deepSearchEnabled",
-    false
-  );
+  // and the chat renders an inline ResearchArtifactCard instead of a
+  // plain assistant reply. Reset to off on every page load — a sticky
+  // toggle here is a footgun because each research run takes minutes
+  // and the small button highlight is easy to miss after a reload.
+  const [deepSearchEnabled, setDeepSearchEnabled] = useState(false);
 
   useEffect(() => {
     if (textareaRef.current) {
