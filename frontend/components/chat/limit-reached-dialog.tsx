@@ -43,7 +43,7 @@ function PureLimitReachedDialog({
   deepSearchUsed,
   deepSearchLimit,
 }: Props) {
-  const twitterUrl = `https://twitter.com/${OWNER_TWITTER_HANDLE}`;
+  const twitterUrl = `https://x.com/${OWNER_TWITTER_HANDLE}`;
   const isDeepSearch = variant === "deepsearch";
 
   return (

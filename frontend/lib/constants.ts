@@ -27,7 +27,7 @@ export const FREE_DEEPSEARCH_LIMIT = Number.parseInt(
 // because the modal renders in the browser. Set NEXT_PUBLIC_OWNER_TWITTER
 // in .env.local / Vercel env to override.
 export const OWNER_TWITTER_HANDLE =
-  process.env.NEXT_PUBLIC_OWNER_TWITTER ?? "trydeepsearch";
+  process.env.NEXT_PUBLIC_OWNER_TWITTER ?? "ratnamcodes";
 
 // Empty-state suggestion chips. Each one should land on a substantive
 // research task that exercises the agent's tool loop (web search →

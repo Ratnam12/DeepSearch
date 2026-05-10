@@ -2,25 +2,36 @@
 
 import {
   ActivityIcon,
+  CheckIcon,
   CopyIcon,
   DownloadIcon,
   FileTextIcon,
   Link2Icon,
 } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { toast } from "sonner";
 import { Artifact } from "@/components/chat/create-artifact";
 import { ResearchReportRenderer } from "@/components/research/report-renderer";
-import { Spokes } from "@/components/ui/loader-spokes";
 import {
   ActivityFeed,
   buildActivitySteps,
   SourcesList,
   type StreamEvent,
-  subagentFromRow,
   type SubagentLive,
+  subagentFromRow,
 } from "@/components/research/research-artifact-card";
-import { cn } from "@/lib/utils";
+import { Spokes } from "@/components/ui/loader-spokes";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import type {
   ResearchPlan,
   ResearchReport,
@@ -28,6 +39,7 @@ import type {
   ResearchSource,
   ResearchSubagent,
 } from "@/lib/db/schema";
+import { cn } from "@/lib/utils";
 
 // Right-pane artifact for a finished deep-research run.
 //
@@ -124,42 +136,11 @@ export const researchArtifact = new Artifact<
     // already done, so there's nothing to merge in here.
   },
   content: ResearchArtifactBody,
-  actions: [
-    {
-      icon: <CopyIcon size={16} />,
-      description: "Copy the report markdown",
-      onClick: ({ content }) => {
-        if (!content) {
-          toast.error("Nothing to copy yet.");
-          return;
-        }
-        void navigator.clipboard
-          .writeText(content)
-          .then(() => toast.success("Report copied"))
-          .catch(() => toast.error("Couldn't copy"));
-      },
-    },
-    {
-      icon: <DownloadIcon size={16} />,
-      description: "Download the report as Markdown",
-      onClick: ({ content, metadata }) => {
-        if (!content) {
-          toast.error("Nothing to download yet.");
-          return;
-        }
-        const blob = new Blob([content], { type: "text/markdown" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        const slug = slugForFilename(metadata?.run?.query ?? "research");
-        a.download = `${slug}.md`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-      },
-    },
-  ],
+  // The framework's floating toolbar pill suppresses itself when
+  // `toolbar` is empty, so the `actions` array would render nowhere. We
+  // inline Copy + Download into the tab strip instead — see
+  // ReportTabActions below.
+  actions: [],
   toolbar: [],
 });
 
@@ -210,6 +191,8 @@ function ResearchArtifactBody({
   const sourceCount = meta.sources.length;
   const stepCount = activitySteps.length;
 
+  const reportMarkdown = content || meta.report?.markdown || "";
+
   return (
     <div className="flex h-full flex-col">
       <div className="sticky top-0 z-10 flex items-center gap-1 border-border/60 border-b bg-background/85 px-6 py-2 backdrop-blur">
@@ -231,6 +214,12 @@ function ResearchArtifactBody({
           label={`Activity${stepCount > 0 ? ` · ${stepCount}` : ""}`}
           onClick={() => setTab("activity")}
         />
+        {tab === "report" && reportMarkdown && (
+          <ReportTabActions
+            markdown={reportMarkdown}
+            query={meta.run?.query ?? null}
+          />
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto px-6 py-6">
@@ -320,6 +309,92 @@ function ActivityTab({
   return (
     <div className="mx-auto max-w-3xl">
       <ActivityFeed inProgress={inProgress} status="done" steps={steps} />
+    </div>
+  );
+}
+
+// Subtle Copy / Download pair for the right edge of the report tab strip.
+// Uses ghost icon-only buttons so they recede until hovered — the report
+// itself is the primary content. The copy state flips to a check icon
+// for ~1.4s after click for tactile feedback (sonner toast handles the
+// failure path; success doesn't need both).
+function ReportTabActions({
+  markdown,
+  query,
+}: {
+  markdown: string;
+  query: string | null;
+}) {
+  const [justCopied, setJustCopied] = useState(false);
+
+  const onCopy = useCallback(() => {
+    if (!markdown) {
+      return;
+    }
+    void navigator.clipboard
+      .writeText(markdown)
+      .then(() => {
+        setJustCopied(true);
+        setTimeout(() => setJustCopied(false), 1400);
+      })
+      .catch(() => toast.error("Couldn't copy"));
+  }, [markdown]);
+
+  const onDownload = useCallback(() => {
+    if (!markdown) {
+      return;
+    }
+    const blob = new Blob([markdown], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${slugForFilename(query ?? "research")}.md`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }, [markdown, query]);
+
+  return (
+    <div className="ml-auto flex items-center gap-0.5">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            aria-label="Copy report as Markdown"
+            className={cn(
+              "inline-flex size-7 items-center justify-center rounded-md text-muted-foreground/70 transition-colors",
+              "hover:bg-muted/60 hover:text-foreground",
+              justCopied && "text-emerald-600 dark:text-emerald-400"
+            )}
+            onClick={onCopy}
+            type="button"
+          >
+            {justCopied ? (
+              <CheckIcon className="size-3.5" />
+            ) : (
+              <CopyIcon className="size-3.5" />
+            )}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" sideOffset={4}>
+          {justCopied ? "Copied" : "Copy as Markdown"}
+        </TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            aria-label="Download report as Markdown"
+            className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-muted/60 hover:text-foreground"
+            onClick={onDownload}
+            type="button"
+          >
+            <DownloadIcon className="size-3.5" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" sideOffset={4}>
+          Download .md
+        </TooltipContent>
+      </Tooltip>
     </div>
   );
 }
