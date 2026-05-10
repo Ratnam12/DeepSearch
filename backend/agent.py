@@ -163,6 +163,10 @@ _SYSTEM_PROMPT = (
 
 async def _run_web_search(query: str) -> str:
     """POST to Serper and return formatted organic results."""
+    if not isinstance(query, str) or not query.strip():
+        logger.warning("web_search called with empty/invalid query: %r", query)
+        return "No results found."
+    query = query.strip()
     settings = get_settings()
     headers = {"X-API-KEY": settings.serper_api_key, "Content-Type": "application/json"}
     async with httpx.AsyncClient(timeout=15) as http:
@@ -171,6 +175,10 @@ async def _run_web_search(query: str) -> str:
             json={"q": query, "num": 10},
             headers=headers,
         )
+        if resp.status_code >= 400:
+            logger.error(
+                "serper %d q=%r body=%s", resp.status_code, query, resp.text[:300]
+            )
         resp.raise_for_status()
         data: dict[str, Any] = resp.json()
     organic = data.get("organic", [])
@@ -254,7 +262,7 @@ async def _dispatch_tool(name: str, arguments: str) -> str:
     args: dict[str, Any] = json.loads(arguments)
     match name:
         case "web_search":
-            return await _run_web_search(args["query"])
+            return await _run_web_search(args.get("query", ""))
         case "scrape_and_index":
             return await _run_scrape_and_index(args["url"])
         case "retrieve_chunks":
