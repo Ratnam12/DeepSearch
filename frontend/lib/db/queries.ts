@@ -26,6 +26,8 @@ import {
   type Suggestion,
   stream,
   suggestion,
+  type UserCredits,
+  userCredits,
   vote,
 } from "./schema";
 
@@ -414,10 +416,12 @@ async function _copyArtifactDocuments(
         typeof data.kind !== "string" ||
         typeof data.title !== "string" ||
         typeof data.content !== "string"
-      ) continue;
+      )
+        continue;
       if (seen.has(data.id)) continue;
       seen.add(data.id);
-      if (data.kind !== "text" && data.kind !== "code" && data.kind !== "sheet") continue;
+      if (data.kind !== "text" && data.kind !== "code" && data.kind !== "sheet")
+        continue;
       try {
         await saveDocument({
           id: data.id,
@@ -672,6 +676,120 @@ export async function getMessageCountByUserId({
     throw new ChatbotError(
       "bad_request:database",
       "Failed to get message count by user id"
+    );
+  }
+}
+
+// Per-user bonus quota — null means "no admin override, use defaults".
+// Read on every chat submit, so it's a single small lookup keyed on the
+// primary key. The route layer combines this with FREE_*_LIMIT to get
+// the effective allowance.
+export async function getUserCredits({
+  userId,
+}: {
+  userId: string;
+}): Promise<UserCredits | null> {
+  try {
+    const [row] = await db
+      .select()
+      .from(userCredits)
+      .where(eq(userCredits.userId, userId))
+      .limit(1);
+    return row ?? null;
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to get user credits"
+    );
+  }
+}
+
+// Admin upsert. Either inserts a fresh row or updates the existing one;
+// `updatedAt` is bumped so the admin UI can show "last touched". Email
+// is denormalised at write-time — Clerk stays the source of truth.
+export async function upsertUserCredits({
+  userId,
+  email,
+  bonusChat,
+  bonusDeepSearch,
+  notes,
+}: {
+  userId: string;
+  email: string | null;
+  bonusChat: number;
+  bonusDeepSearch: number;
+  notes?: string | null;
+}): Promise<UserCredits> {
+  try {
+    const [row] = await db
+      .insert(userCredits)
+      .values({
+        userId,
+        email,
+        bonusChat,
+        bonusDeepSearch,
+        notes: notes ?? null,
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: userCredits.userId,
+        set: {
+          email,
+          bonusChat,
+          bonusDeepSearch,
+          notes: notes ?? null,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return row;
+  } catch (error) {
+    console.error("upsertUserCredits failed", {
+      userId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to upsert user credits"
+    );
+  }
+}
+
+export async function listUserCredits(): Promise<UserCredits[]> {
+  try {
+    return await db
+      .select()
+      .from(userCredits)
+      .orderBy(desc(userCredits.updatedAt))
+      .limit(200);
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to list user credits"
+    );
+  }
+}
+
+// Lifetime user-message count for the free-tier quota (FREE_CHAT_MESSAGE_LIMIT).
+// Counts every "user" message across every chat the user owns — no time
+// window, since the cap is "20 free queries, total" not "20 per hour".
+export async function getLifetimeUserMessageCount({
+  userId,
+}: {
+  userId: string;
+}) {
+  try {
+    const [stats] = await db
+      .select({ count: count(message.id) })
+      .from(message)
+      .innerJoin(chat, eq(message.chatId, chat.id))
+      .where(and(eq(chat.userId, userId), eq(message.role, "user")))
+      .execute();
+    return stats?.count ?? 0;
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to get lifetime user message count"
     );
   }
 }

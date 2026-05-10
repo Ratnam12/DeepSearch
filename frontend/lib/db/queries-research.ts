@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, asc, desc, eq, gt, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { ChatbotError } from "../errors";
@@ -76,6 +76,31 @@ export async function getResearchRunById({
     throw new ChatbotError(
       "bad_request:database",
       "Failed to get research run"
+    );
+  }
+}
+
+// Lifetime research-run count for the free-tier DeepSearch quota
+// (FREE_DEEPSEARCH_LIMIT). Counts every run the user has ever started
+// regardless of status — even cancelled/failed runs cost something
+// (planner LLM call + partial subagent fan-out), so they count.
+export async function countResearchRunsByUserId({
+  userId,
+}: {
+  userId: string;
+}): Promise<number> {
+  try {
+    const [stats] = await db
+      .select({ count: count(researchRun.id) })
+      .from(researchRun)
+      .where(eq(researchRun.userId, userId))
+      .execute();
+    return stats?.count ?? 0;
+  } catch (err) {
+    console.error("countResearchRunsByUserId failed", { userId, err });
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to count research runs"
     );
   }
 }

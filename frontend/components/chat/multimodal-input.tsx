@@ -66,6 +66,10 @@ import {
 } from "../ui/tooltip";
 import { DropZoneOverlay } from "./drop-zone-overlay";
 import { PaperclipIcon, StopIcon } from "./icons";
+import {
+  LimitReachedDialog,
+  type LimitReachedVariant,
+} from "./limit-reached-dialog";
 import { PreviewAttachment } from "./preview-attachment";
 import {
   type SlashCommand,
@@ -92,6 +96,21 @@ const ALLOWED_MIME_TYPES = new Set([
   "image/heif",
   "application/pdf",
 ]);
+
+// /api/usage response shape — kept inline to avoid a public types export
+// just for the composer. Mirrors what app/(chat)/api/usage/route.ts emits.
+type UsageQuota = { used: number; limit: number };
+type UsageResponse = {
+  signedIn: boolean;
+  chat: UsageQuota;
+  deepSearch: UsageQuota;
+};
+
+const USAGE_FALLBACK: UsageResponse = {
+  signedIn: false,
+  chat: { used: 0, limit: 20 },
+  deepSearch: { used: 0, limit: 2 },
+};
 
 function isSupportedAttachment(file: File): boolean {
   if (ALLOWED_MIME_TYPES.has(file.type)) {
@@ -178,6 +197,49 @@ function PureMultimodalInput({
   // toggle here is a footgun because each research run takes minutes
   // and the small button highlight is easy to miss after a reload.
   const [deepSearchEnabled, setDeepSearchEnabled] = useState(false);
+
+  // Free-tier quota state. The SWR fetch returns the user's lifetime
+  // usage + the configured limits; the same numbers are enforced server-
+  // side in /api/chat/route.ts so a tampered client can't slip past.
+  // Optimistic increment after submit makes the next click trip the
+  // dialog without waiting for a round-trip.
+  const usageUrl = `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/usage`;
+  const { data: usage, mutate: mutateUsage } = useSWR<UsageResponse>(
+    isSignedIn ? usageUrl : null,
+    (url: string) => fetch(url).then((r) => r.json()),
+    { revalidateOnFocus: true, fallbackData: USAGE_FALLBACK }
+  );
+  const [limitDialog, setLimitDialog] = useState<{
+    open: boolean;
+    variant: LimitReachedVariant;
+  }>({ open: false, variant: "chat" });
+
+  const bumpUsage = useCallback(
+    (which: "chat" | "deepSearch") => {
+      mutateUsage(
+        (current) => {
+          if (!current?.signedIn) {
+            return current;
+          }
+          if (which === "deepSearch") {
+            return {
+              ...current,
+              deepSearch: {
+                ...current.deepSearch,
+                used: current.deepSearch.used + 1,
+              },
+            };
+          }
+          return {
+            ...current,
+            chat: { ...current.chat, used: current.chat.used + 1 },
+          };
+        },
+        { revalidate: false }
+      );
+    },
+    [mutateUsage]
+  );
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -302,6 +364,25 @@ function PureMultimodalInput({
 
     const text = input.trim();
 
+    // ── Free-tier quota gate ────────────────────────────────────────
+    // Pre-flight check off the SWR cache so we can pop the friendly
+    // dialog without making the user wait for a 429 round-trip. Server
+    // still enforces the same limits — this is just for UX. Skip when
+    // the user isn't signed in: the auth redirect above handles them.
+    if (usage?.signedIn) {
+      if (
+        deepSearchEnabled &&
+        usage.deepSearch.used >= usage.deepSearch.limit
+      ) {
+        setLimitDialog({ open: true, variant: "deepsearch" });
+        return;
+      }
+      if (!deepSearchEnabled && usage.chat.used >= usage.chat.limit) {
+        setLimitDialog({ open: true, variant: "chat" });
+        return;
+      }
+    }
+
     // ── DeepSearch toggle path ──────────────────────────────────────
     // The chat thread stays the home for research — no separate page.
     // We send through the same useChat() pipeline as a regular
@@ -332,6 +413,7 @@ function PureMultimodalInput({
         { role: "user", parts: [{ type: "text", text }] },
         { body: { deepSearch: true } }
       );
+      bumpUsage("deepSearch");
       setAttachments([]);
       setLocalStorageInput("");
       setInput("");
@@ -377,6 +459,7 @@ function PureMultimodalInput({
         ...(text ? [{ type: "text" as const, text: input }] : []),
       ],
     });
+    bumpUsage("chat");
 
     setAttachments([]);
     setLocalStorageInput("");
@@ -400,6 +483,8 @@ function PureMultimodalInput({
     selectedModelId,
     selectedModelHasVision,
     deepSearchEnabled,
+    usage,
+    bumpUsage,
   ]);
 
   const uploadFile = useCallback(async (file: File) => {
@@ -789,6 +874,18 @@ function PureMultimodalInput({
           </PromptInputFooter>
         </PromptInput>
       </TooltipProvider>
+
+      <LimitReachedDialog
+        chatLimit={usage?.chat.limit ?? USAGE_FALLBACK.chat.limit}
+        chatUsed={usage?.chat.used ?? 0}
+        deepSearchLimit={
+          usage?.deepSearch.limit ?? USAGE_FALLBACK.deepSearch.limit
+        }
+        deepSearchUsed={usage?.deepSearch.used ?? 0}
+        onOpenChange={(open) => setLimitDialog((prev) => ({ ...prev, open }))}
+        open={limitDialog.open}
+        variant={limitDialog.variant}
+      />
     </div>
   );
 }
@@ -867,7 +964,6 @@ function PureDeepSearchToggle({
 }
 
 const DeepSearchToggle = memo(PureDeepSearchToggle);
-
 
 function PureAttachmentsButton({
   fileInputRef,
@@ -1091,7 +1187,10 @@ function PureModelSelectorCompact({
                           <EyeIcon className="size-3.5" />
                         )}
                         {capabilities?.[model.id]?.file && (
-                          <PaperclipIcon size={14} style={{ height: 14, width: 14 }} />
+                          <PaperclipIcon
+                            size={14}
+                            style={{ height: 14, width: 14 }}
+                          />
                         )}
                         {capabilities?.[model.id]?.reasoning && (
                           <BrainIcon className="size-3.5" />

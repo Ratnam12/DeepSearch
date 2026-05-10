@@ -15,7 +15,8 @@ export type Surface =
   | "history"
   | "vote"
   | "document"
-  | "suggestions";
+  | "suggestions"
+  | "quota";
 
 export type ErrorCode = `${ErrorType}:${Surface}`;
 
@@ -31,6 +32,7 @@ export const visibilityBySurface: Record<Surface, ErrorVisibility> = {
   vote: "response",
   document: "response",
   suggestions: "response",
+  quota: "response",
 };
 
 export class ChatbotError extends Error {
@@ -89,6 +91,8 @@ export function getMessageByErrorCode(errorCode: ErrorCode): string {
 
     case "rate_limit:chat":
       return "You've reached the message limit. Come back in 1 hour to continue chatting.";
+    case "rate_limit:quota":
+      return "You've used up your free queries. DM the maintainer on Twitter to keep going.";
     case "not_found:chat":
       return "The requested chat was not found. Please check the chat ID and try again.";
     case "forbidden:chat":

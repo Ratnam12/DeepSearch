@@ -1,13 +1,18 @@
 "use client";
 
 import { useUser } from "@clerk/nextjs";
-import { PanelLeftIcon, PenSquareIcon, TrashIcon } from "lucide-react";
+import {
+  PanelLeftIcon,
+  PenSquareIcon,
+  ShieldCheckIcon,
+  TrashIcon,
+} from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { toast } from "sonner";
-import { useSWRConfig } from "swr";
+import useSWR, { useSWRConfig } from "swr";
 import { unstable_serialize } from "swr/infinite";
 import {
   getChatHistoryPaginationKey,
@@ -46,6 +51,19 @@ export function AppSidebar() {
   const { setOpenMobile, toggleSidebar } = useSidebar();
   const { mutate } = useSWRConfig();
   const [showDeleteAllDialog, setShowDeleteAllDialog] = useState(false);
+
+  // /api/admin/me returns { isAdmin: bool } — keyed off the Clerk session
+  // server-side, so the link only renders for the maintainer. The fetch
+  // is gated on `isSignedIn` to avoid an unauth round-trip on the
+  // landing page.
+  const { data: adminMe } = useSWR<{ isAdmin: boolean }>(
+    isSignedIn
+      ? `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/admin/me`
+      : null,
+    (url: string) => fetch(url).then((r) => r.json()),
+    { revalidateOnFocus: false, dedupingInterval: 60_000 }
+  );
+  const isAdmin = adminMe?.isAdmin === true;
 
   const handleDeleteAll = () => {
     setShowDeleteAllDialog(false);
@@ -138,6 +156,20 @@ export function AppSidebar() {
                     >
                       <TrashIcon className="size-4" />
                       <span className="text-[13px]">Delete all</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                )}
+                {isAdmin && (
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      asChild
+                      className="rounded-lg text-sidebar-foreground/70 transition-colors duration-150 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                      tooltip="Admin"
+                    >
+                      <Link href="/admin" onClick={() => setOpenMobile(false)}>
+                        <ShieldCheckIcon className="size-4" />
+                        <span className="text-[13px]">Admin</span>
+                      </Link>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 )}

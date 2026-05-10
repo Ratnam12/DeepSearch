@@ -15,6 +15,13 @@
       "when": 1777835702680,
       "tag": "0001_good_energizer",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1778381526754,
+      "tag": "0002_curvy_wiccan",
+      "breakpoints": true
     }
   ]
 }

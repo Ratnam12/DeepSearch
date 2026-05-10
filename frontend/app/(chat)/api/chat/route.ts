@@ -10,15 +10,24 @@ import {
   isAutoModelId,
 } from "@/lib/ai/models";
 import {
+  FREE_CHAT_MESSAGE_LIMIT,
+  FREE_DEEPSEARCH_LIMIT,
+} from "@/lib/constants";
+import {
   deleteChatById,
   getChatById,
+  getLifetimeUserMessageCount,
   getMessagesByChatId,
+  getUserCredits,
   saveChat,
   saveDocument,
   saveMessages,
   updateChatTitleById,
 } from "@/lib/db/queries";
-import { createResearchRun } from "@/lib/db/queries-research";
+import {
+  countResearchRunsByUserId,
+  createResearchRun,
+} from "@/lib/db/queries-research";
 import type { DBMessage } from "@/lib/db/schema";
 import { ChatbotError } from "@/lib/errors";
 import { checkIpRateLimit } from "@/lib/ratelimit";
@@ -89,7 +98,8 @@ async function attachmentToDataUrl(part: UserFilePart): Promise<string> {
 
   const partRecord = part as Record<string, unknown>;
   const pathname =
-    getStringField(partRecord, "pathname") ?? getStringField(partRecord, "name");
+    getStringField(partRecord, "pathname") ??
+    getStringField(partRecord, "name");
   const buffer =
     (pathname ? await readBlobPathname(pathname) : null) ??
     (await readAttachmentUrl(part.url));
@@ -271,6 +281,39 @@ export async function POST(request: Request) {
 
   await checkIpRateLimit(ipAddress(request));
 
+  // ── Free-tier quota check ──────────────────────────────────────────────
+  // Done before we save the new user message or create a research run so
+  // the count we read is the true "before this attempt" total — i.e. a
+  // user at exactly LIMIT messages is blocked here on the (LIMIT+1)th
+  // submit. Tool-approval continuations don't add a new user message, so
+  // they skip the count check; otherwise an in-flight chat could deadlock
+  // if the user happened to cross the threshold mid-session.
+  const isToolApprovalFlow = Boolean(messages);
+  const isNewUserTurn = message?.role === "user" && !isToolApprovalFlow;
+  if (isNewUserTurn) {
+    const credits = await getUserCredits({ userId });
+    if (deepSearch) {
+      const deepSearchUsed = await countResearchRunsByUserId({ userId });
+      const deepSearchLimit =
+        FREE_DEEPSEARCH_LIMIT + (credits?.bonusDeepSearch ?? 0);
+      if (deepSearchUsed >= deepSearchLimit) {
+        return new ChatbotError(
+          "rate_limit:quota",
+          "deepsearch-quota-exceeded"
+        ).toResponse();
+      }
+    } else {
+      const chatUsed = await getLifetimeUserMessageCount({ userId });
+      const chatLimit = FREE_CHAT_MESSAGE_LIMIT + (credits?.bonusChat ?? 0);
+      if (chatUsed >= chatLimit) {
+        return new ChatbotError(
+          "rate_limit:quota",
+          "chat-quota-exceeded"
+        ).toResponse();
+      }
+    }
+  }
+
   // ── Load (or create) the chat row ──────────────────────────────────────
   const existingChat = await getChatById({ id });
   let messagesFromDb: DBMessage[] = [];
@@ -297,7 +340,6 @@ export async function POST(request: Request) {
   }
 
   // ── Build the full UIMessages array we'll send to the model ────────────
-  const isToolApprovalFlow = Boolean(messages);
   const uiMessages: ChatMessage[] = isToolApprovalFlow
     ? (messages as ChatMessage[])
     : [...convertToUIMessages(messagesFromDb), message as ChatMessage];

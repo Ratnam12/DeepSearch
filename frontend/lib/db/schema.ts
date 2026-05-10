@@ -17,6 +17,23 @@ import {
 // row that previously had a uuid `userId` foreign key now stores Clerk's
 // string user id (e.g. "user_2abc...") in a varchar column.
 
+// Per-user bonus quota above the free-tier defaults. Row exists only if
+// the admin has granted extra credits via /admin; absence means "default
+// limits apply". Email is denormalised at write-time for the admin UI to
+// browse — Clerk remains the source of truth and may diverge if the user
+// later edits their email there.
+export const userCredits = pgTable("UserCredits", {
+  userId: varchar("userId", { length: 255 }).primaryKey().notNull(),
+  email: varchar("email", { length: 320 }),
+  bonusChat: integer("bonusChat").notNull().default(0),
+  bonusDeepSearch: integer("bonusDeepSearch").notNull().default(0),
+  notes: text("notes"),
+  createdAt: timestamp("createdAt").notNull().defaultNow(),
+  updatedAt: timestamp("updatedAt").notNull().defaultNow(),
+});
+
+export type UserCredits = InferSelectModel<typeof userCredits>;
+
 export const chat = pgTable("Chat", {
   id: uuid("id").primaryKey().notNull().defaultRandom(),
   createdAt: timestamp("createdAt").notNull().defaultNow(),
@@ -190,9 +207,7 @@ export const researchPlan = pgTable(
       .references(() => researchRun.id, { onDelete: "cascade" }),
     version: integer("version").notNull(),
     briefMd: text("briefMd"),
-    subQuestions: json("subQuestions")
-      .notNull()
-      .$type<ResearchSubQuestion[]>(),
+    subQuestions: json("subQuestions").notNull().$type<ResearchSubQuestion[]>(),
     outline: json("outline").notNull().$type<ResearchOutlineSection[]>(),
     approvedAt: timestamp("approvedAt"),
     createdAt: timestamp("createdAt").notNull().defaultNow(),
