@@ -357,10 +357,15 @@ async def _execute_tool_calls(
                 )
             else:
                 result = await _dispatch_tool(fn_name, fn_args)
-        except Exception:
+        except Exception as exc:
+            # Mirror the sub-agent's _safe_run_* pattern: surface the
+            # failure as a tool result string instead of killing the
+            # stream, so the model can fall back to other tools or
+            # answer with what it already has.
             duration_ms = int((perf_counter() - started) * 1000)
             logger.exception("tool.error name=%s duration_ms=%s", fn_name, duration_ms)
-            raise
+            result = f"{fn_name} failed: {exc.__class__.__name__}: {exc}"
+            contexts = []
 
         duration_ms = int((perf_counter() - started) * 1000)
         logger.info("tool.end name=%s duration_ms=%s", fn_name, duration_ms)

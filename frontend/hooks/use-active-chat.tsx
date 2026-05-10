@@ -286,7 +286,7 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
       setInput,
       visibilityType: visibility,
       isReadonly,
-      isLoading: !isNewChat && isLoading,
+      isLoading: !isNewChat && (isLoading || messages.length === 0),
       votes,
       currentModelId,
       setCurrentModelId,
