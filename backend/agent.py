@@ -47,6 +47,15 @@ _openai_client = AsyncOpenAI(
     api_key=_settings.openrouter_api_key,
 )
 
+# Maximum number of tool-call iterations before the loop drops the tool
+# list and forces the model to synthesise an answer from current context.
+# A legitimate research query (web_search → scrape_and_index → retrieve_chunks,
+# maybe one refinement round) tops out at ~3 iterations; 8 is the soft
+# ceiling that catches runaway "keep searching" behaviour before Vercel's
+# 300s function timeout truncates the stream and leaves a ghost message.
+MAX_TOOL_STEPS = 8
+
+
 TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
@@ -90,45 +99,6 @@ TOOLS: list[dict[str, Any]] = [
             },
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "create_artifact",
-            "description": (
-                "Render the substantive answer as a side-panel artifact. CALL THIS "
-                "FOR ALMOST EVERY ANSWER once tool work is complete — the artifact "
-                "is DeepSearch's primary deliverable. Only skip for trivial one-liner "
-                "factual lookups (\"What's the capital of France?\").\n"
-                "Pick the kind:\n"
-                "- 'text' for research reports, comparisons, summaries, explanations. "
-                "Markdown is supported — use headings, bullets, and bracketed inline "
-                "citations like [1], [2].\n"
-                "- 'code' for code samples or scripts. Start with a fenced language "
-                "tag (e.g. ```python).\n"
-                "- 'sheet' for tabular data — content must be valid CSV with a header "
-                "row.\n"
-                "Title should be a specific noun phrase, not \"Answer\". Content "
-                "should be self-contained (a reader seeing only the artifact gets "
-                "the full answer). Your inline chat reply afterwards should be 1-3 "
-                "sentences framing what's in the artifact, not a repeat of it."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "kind": {"type": "string", "enum": ["text", "code", "sheet"]},
-                    "title": {"type": "string", "description": "Short descriptive title."},
-                    "content": {
-                        "type": "string",
-                        "description": (
-                            "Full artifact content. Markdown for 'text', raw source "
-                            "for 'code', CSV for 'sheet'."
-                        ),
-                    },
-                },
-                "required": ["kind", "title", "content"],
-            },
-        },
-    },
 ]
 
 _SYSTEM_PROMPT = (
@@ -141,31 +111,18 @@ _SYSTEM_PROMPT = (
     "   then scrape_and_index to ingest each one, then retrieve_chunks before answering.\n"
     "4. Always call retrieve_chunks at least once before composing your final answer.\n"
     "\n"
-    "Artifact policy (IMPORTANT — follow strictly):\n"
-    "5. After your tool work is complete, ALWAYS call create_artifact to render the\n"
-    "   substantive answer. The artifact is the primary deliverable; the inline chat\n"
-    "   reply should be a 1-3 sentence framing message that points to the artifact.\n"
-    "   Only skip create_artifact for trivial single-sentence factual lookups\n"
-    "   (\"What is the capital of France?\" → no artifact needed).\n"
-    "6. Pick the artifact kind based on the content:\n"
-    "   - kind='text' for research reports, comparisons, summaries, explanations\n"
-    "     (use markdown: headings, bullets, inline citations).\n"
-    "   - kind='code' for code samples or scripts (start with a fenced language tag).\n"
-    "   - kind='sheet' for tabular comparisons — output valid CSV with a header row.\n"
-    "7. The artifact's title should be a short, specific noun phrase (\"Comparing Vercel\n"
-    "   AI SDK and LangChain\", not \"Answer\"). Content should be self-contained — a\n"
-    "   reader who only sees the artifact should still get the full answer.\n"
-    "8. EVERY text artifact MUST end with a `## Sources` markdown section listing every\n"
-    "   [N] citation index used in the body, paired with its source URL. The post-\n"
-    "   processor will inject markdown links from the retrieved chunks if you forget,\n"
-    "   but include them yourself when possible — that way they always reflect what you\n"
-    "   actually cited. Format:\n"
+    "Answer policy:\n"
+    "5. Once you have enough context, produce the final answer as a streamed text\n"
+    "   reply. Use markdown for structure (headings, bullets, fenced code) whenever\n"
+    "   the answer benefits from it. There is no side-panel artifact — every reply,\n"
+    "   short or long, is shown inline in the chat.\n"
+    "6. Be efficient with tool use. A small number of well-targeted searches beats\n"
+    "   a dozen exploratory ones; the loop will cut you off after eight iterations.\n"
+    "7. Close every substantive answer with a `## Sources` section listing each [N]\n"
+    "   citation index paired with its source URL, in the order they appear:\n"
     "       ## Sources\n"
     "       1. <descriptive title> — https://...\n"
-    "       2. <descriptive title> — https://...\n"
-    "9. Inline reply pattern after creating an artifact: brief sentence stating what's\n"
-    "   in the artifact, followed by 1-2 key takeaways. Don't repeat the artifact\n"
-    "   verbatim in chat."
+    "       2. <descriptive title> — https://..."
 )
 
 
@@ -356,12 +313,6 @@ async def _execute_tool_calls(
     ``check_confidence`` before formatting. Low-confidence retrieval is passed
     back to the model as an insufficiency signal so it can search and scrape
     fresh sources before answering.
-
-    The ``create_artifact`` tool emits an extra ``artifact`` event containing
-    the structured artifact payload (kind/title/content). The UI bridge
-    converts this to an AI SDK ``data-artifact`` part so the side panel can
-    render it; the model itself just receives an acknowledgement string as the
-    tool result.
     """
     history.append(message.model_dump(exclude_none=True))
     for tool_call in message.tool_calls or []:
@@ -403,20 +354,6 @@ async def _execute_tool_calls(
                 result, citations = await _run_web_search(query)
                 if citations:
                     yield {"type": "citations", "items": citations}
-            elif fn_name == "create_artifact":
-                args = json.loads(fn_args)
-                artifact_id = str(uuid.uuid4())
-                yield {
-                    "type": "artifact",
-                    "artifact_id": artifact_id,
-                    "kind": args.get("kind", "text"),
-                    "title": args.get("title", "Untitled"),
-                    "content": args.get("content", ""),
-                }
-                result = (
-                    f"Artifact rendered (id={artifact_id}, "
-                    f"kind={args.get('kind')}, title={args.get('title')!r})."
-                )
             else:
                 result = await _dispatch_tool(fn_name, fn_args)
         except Exception as exc:
@@ -863,16 +800,24 @@ async def _agent_loop(
     SynthesizeAnswer DSPy module and the best is selected by llm_judge;
     that winner is then word-streamed.
 
+    A tool-iteration cap (:data:`MAX_TOOL_STEPS`) bounds the loop. Once the
+    cap is hit, the next ``_stream_completion`` call is made with
+    ``tools=None`` so the model is forced to synthesise a final answer
+    from the context it has already gathered, instead of looping
+    indefinitely until Vercel kills the function. Without this cap the
+    chat UI ends up with a ghost assistant message (tool parts saved, no
+    text part) when a complex query exceeds the 300s budget.
+
     Yields dicts with key ``type`` set to one of:
     - ``"tool_call"``   — the model is invoking a tool.
     - ``"tool_result"`` — the tool execution result.
-    - ``"artifact"``    — a structured artifact created via create_artifact.
     - ``"text"``        — a streamed/yielded chunk of the final answer.
     """
     settings = get_settings()
     # Track the most recent retrieve_chunks result so the multi-candidate path
     # can pass grounded context into each SynthesizeAnswer call.
     last_context: str = ""
+    step = 0
 
     while True:
         # For score==3 we suppress the first-pass tokens because the
@@ -882,10 +827,16 @@ async def _agent_loop(
         streamed_message = None
         finish_reason: str | None = None
 
+        # Past the iteration cap, drop the tool list. The model can no
+        # longer call anything and must answer from what it has — which
+        # is exactly what we want when a query has spiralled into too
+        # many searches.
+        tools_for_call = TOOLS if step < MAX_TOOL_STEPS else None
+
         async for event in _stream_completion(
             model=model,
             history=history,
-            tools=TOOLS,
+            tools=tools_for_call,
             session_id=session_id,
             user_id=user_id,
         ):
@@ -904,7 +855,7 @@ async def _agent_loop(
             finish_reason=finish_reason,
         )
 
-        if choice.finish_reason == "tool_calls":
+        if choice.finish_reason == "tool_calls" and tools_for_call is not None:
             async for event in _execute_tool_calls(choice.message, history):
                 if event["type"] == "tool_result" and event["name"] == "retrieve_chunks":
                     new_ctx = event["content"]
@@ -915,6 +866,12 @@ async def _agent_loop(
                         # lower context precision when carried into evaluation.
                         last_context = new_ctx[:settings.max_dspy_context_chars]
                 yield event
+            step += 1
+            if step >= MAX_TOOL_STEPS:
+                logger.warning(
+                    "agent_loop hit MAX_TOOL_STEPS=%s — forcing final answer",
+                    MAX_TOOL_STEPS,
+                )
             continue
 
         if choice.finish_reason == "stop":

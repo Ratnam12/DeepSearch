@@ -8,7 +8,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -272,67 +271,6 @@ def _ui_part(obj: dict[str, Any]) -> bytes:
     return f"data: {json.dumps(obj, separators=(',', ':'))}\n\n".encode()
 
 
-_CITATION_PATTERN = re.compile(r"\[(\d+)\]")
-_SOURCES_HEADER_PATTERN = re.compile(r"(?im)^#+\s*sources?\b")
-
-
-def _domain_label(url: str) -> str:
-    """Best-effort short label for a source URL — e.g. 'arxiv.org'."""
-    try:
-        without_scheme = re.sub(r"^https?://(?:www\.)?", "", url)
-        return without_scheme.split("/")[0] or url
-    except Exception:
-        return url
-
-
-def _inject_citations(content: str, citations: list[dict[str, Any]]) -> str:
-    """Make bracketed citations clickable and ensure a Sources section.
-
-    Two passes:
-
-    1. Replace each ``[N]`` in the body with a markdown link
-       ``[\\[N\\]](url)`` so the artifact renderer turns it into a real
-       hyperlink while still showing ``[N]`` as the visible label.
-    2. Append a ``## Sources`` markdown block at the end if the model
-       didn't already write one. This is the safety-net the system
-       prompt asks the model to handle but doesn't always remember to,
-       especially on follow-up turns.
-    """
-    if not citations:
-        return content
-
-    url_map: dict[int, str] = {}
-    for citation in citations:
-        idx = citation.get("index")
-        url = citation.get("url")
-        if isinstance(idx, int) and isinstance(url, str) and url:
-            url_map[idx] = url
-
-    if not url_map:
-        return content
-
-    def _replace_marker(match: re.Match[str]) -> str:
-        idx = int(match.group(1))
-        url = url_map.get(idx)
-        if not url:
-            return match.group(0)
-        return f"[\\[{idx}\\]]({url})"
-
-    processed = _CITATION_PATTERN.sub(_replace_marker, content)
-
-    if _SOURCES_HEADER_PATTERN.search(processed):
-        return processed
-
-    sources_lines = ["", "", "## Sources", ""]
-    for citation in sorted(citations, key=lambda c: c.get("index", 0)):
-        idx = citation.get("index")
-        url = citation.get("url")
-        if not (isinstance(idx, int) and isinstance(url, str) and url):
-            continue
-        sources_lines.append(f"{idx}. [{_domain_label(url)}]({url})")
-    return processed + "\n".join(sources_lines)
-
-
 def _extract_latest_user_text(messages: list[dict[str, Any]]) -> str:
     """Extract plain text from the most recent user message for cache keying."""
     for msg in reversed(messages):
@@ -379,18 +317,28 @@ async def _replay_cached_payload(
 ) -> AsyncGenerator[bytes, None]:
     """Replay a cached answer as AI SDK UI Message Stream parts.
 
-    The cached string is the JSON payload we wrote in
-    :func:`_ui_message_stream`: ``{"text": str, "artifacts": [...], "citations": [...]}``.
-    On a hit we emit ``start``, the optional text body, citations (so the
-    frontend has the [N] → URL mapping before artifacts render), each
-    artifact (with a fresh id so each chat persists its own Document row
-    instead of versioning the original), then ``finish`` + ``[DONE]``.
+    The current cache payload is ``{"text": str, "citations": [...]}``.
+    Legacy entries written before artifacts were retired also carry an
+    ``"artifacts"`` field; if such an entry has no ``text``, we promote
+    the first artifact's body to inline text so the user still sees the
+    answer rather than a ghost message.
     """
     yield _ui_part({"type": "start", "messageId": msg_id})
 
     payload = json.loads(cached)
 
     cached_text = (payload.get("text") or "").strip()
+    if not cached_text:
+        # Back-compat: legacy entries put the substantive answer in an
+        # artifact body. Pull the first non-empty one inline.
+        for artifact in payload.get("artifacts") or []:
+            if not isinstance(artifact, dict):
+                continue
+            body = (artifact.get("content") or "").strip()
+            if body:
+                cached_text = body
+                break
+
     if cached_text:
         yield _ui_part({"type": "text-start", "id": text_id})
         yield _ui_part({"type": "text-delta", "id": text_id, "delta": cached_text})
@@ -402,19 +350,6 @@ async def _replay_cached_payload(
             "type": "data-citations",
             "id": f"cite_{uuid.uuid4().hex}",
             "data": cached_citations,
-        })
-
-    for artifact in payload.get("artifacts") or []:
-        if not isinstance(artifact, dict):
-            continue
-        # Re-issue a fresh artifact id per replay so each cached chat
-        # persists its own Document row instead of stacking versions
-        # under the original artifact's id.
-        replay_artifact = {**artifact, "id": str(uuid.uuid4())}
-        yield _ui_part({
-            "type": "data-artifact",
-            "id": replay_artifact["id"],
-            "data": replay_artifact,
         })
 
     yield _ui_part({"type": "finish"})
@@ -434,8 +369,7 @@ async def _ui_message_stream(
       - ``start`` once at the beginning with the assistant message id
       - ``tool-input-available`` when the agent calls a tool (input ready)
       - ``tool-output-available`` when a tool returns
-      - ``data-artifact`` for ``create_artifact`` payloads (rendered by the
-        side-panel artifact component on the frontend)
+      - ``data-citations`` for the [N] → URL map from retrieve_chunks / web_search
       - ``text-start`` / ``text-delta`` / ``text-end`` for the streamed answer
       - ``finish`` once at the end (success path)
       - ``error`` if the agent raises before completion
@@ -451,23 +385,12 @@ async def _ui_message_stream(
     msg_id = f"msg_{uuid.uuid4().hex}"
     text_id = f"text_{uuid.uuid4().hex}"
     text_started = False
-    artifact_emitted = False
     text_buffer: list[str] = []
-    # Artifacts emitted during this stream — captured so the cache payload
-    # can replay them later. Without this the artifact's substantive
-    # content is invisible to the cache and we end up storing only the
-    # short text preamble (or nothing at all) for an answer the user
-    # actually saw as a full side-panel artifact.
-    artifacts_emitted: list[dict[str, Any]] = []
-    # Latest citations from retrieve_chunks. Used to (a) linkify [N]
-    # markers inside the artifact's body, and (b) append a Sources
-    # section if the model forgot one. We keep the most recent set
-    # because that's what the model used to ground the answer.
+    # Latest citations from retrieve_chunks / web_search. Forwarded as a
+    # ``data-citations`` part so the frontend can linkify the [N] markers
+    # in the streamed answer; we also stash them in the cache payload so
+    # a hit replays clickable citations.
     latest_citations: list[dict[str, Any]] = []
-    # When we auto-promote streamed text into an artifact, we want the
-    # title to reflect what the user actually asked rather than a generic
-    # "Research notes". Pull a summary of the last user message up front.
-    fallback_title = _derive_artifact_title(messages)
     # Determine once whether this request is eligible for semantic caching.
     # Used for both the early-return hit path and the post-stream store path.
     query_text = _extract_latest_user_text(messages) if _is_cache_eligible(messages) else ""
@@ -506,33 +429,7 @@ async def _ui_message_stream(
                     "toolCallId": event["call_id"],
                     "output": event.get("content", ""),
                 })
-            elif etype == "artifact":
-                artifact_emitted = True
-                kind = event.get("kind", "text")
-                content = event.get("content", "")
-                # Linkify [N] and append a Sources block — text artifacts
-                # only. Code/sheet kinds are content-shaped where bracket
-                # markers are not citations and inserting a markdown
-                # Sources block would corrupt the artifact.
-                if kind == "text" and latest_citations:
-                    content = _inject_citations(content, latest_citations)
-                artifact_data = {
-                    "id": event["artifact_id"],
-                    "kind": kind,
-                    "title": event.get("title", "Untitled"),
-                    "content": content,
-                }
-                artifacts_emitted.append(artifact_data)
-                yield _ui_part({
-                    "type": "data-artifact",
-                    "id": event["artifact_id"],
-                    "data": artifact_data,
-                })
             elif etype == "citations":
-                # [N] → URL mapping from the most recent retrieve_chunks.
-                # Frontend uses this to make bracketed citations in the
-                # streamed answer clickable. Multiple events are allowed
-                # — the frontend keeps the latest one.
                 items = event.get("items", [])
                 if items:
                     latest_citations = items
@@ -568,78 +465,39 @@ async def _ui_message_stream(
         yield _ui_part({"type": "text-end", "id": text_id})
 
     full_text = "".join(text_buffer).strip()
+    synthesis_ok = bool(full_text)
 
-    # Safety net: if the agent answered substantively but didn't call
-    # create_artifact (sometimes the model just forgets despite the
-    # prompt), promote the streamed answer into a text artifact so the
-    # user always gets the polished side-panel view they expect from
-    # DeepSearch. The threshold is conservative — short factual lookups
-    # ("capital of France?") stay inline-only.
-    if not artifact_emitted and len(full_text.split()) >= 120:
-        artifact_id = str(uuid.uuid4())
-        promoted_artifact = {
-            "id": artifact_id,
-            "kind": "text",
-            "title": fallback_title,
-            "content": full_text,
-        }
-        artifacts_emitted.append(promoted_artifact)
-        yield _ui_part({
-            "type": "data-artifact",
-            "id": artifact_id,
-            "data": promoted_artifact,
-        })
+    # Safety net: the agent loop ran cleanly but produced no visible
+    # reply at all (likely cause: it spent its tool budget without
+    # synthesising, or the model emitted only tool calls). Emit a short
+    # fallback so the assistant message persists as something instead of
+    # a ghost row with only tool parts. Without this the frontend shows
+    # the "Researched · N steps" group followed by empty space.
+    if not synthesis_ok:
+        fallback = (
+            "I ran the searches but couldn't synthesise a final answer. "
+            "Try rephrasing the question or narrowing the scope."
+        )
+        if not text_started:
+            yield _ui_part({"type": "text-start", "id": text_id})
+        yield _ui_part({"type": "text-delta", "id": text_id, "delta": fallback})
+        yield _ui_part({"type": "text-end", "id": text_id})
 
-    # Cache a structured payload (text + artifacts + citations) so a hit
-    # can replay the full UI shape, not just a wall of text. The previous
-    # code cached only ``full_text``, which was empty whenever the agent
-    # put the answer in an artifact (the common path per the system
-    # prompt) — so the cache stayed empty and every query re-ran the
-    # full pipeline.
-    if query_text and (full_text or artifacts_emitted):
+    # Cache the streamed text + citations so a hit replays the same UI
+    # (inline reply + clickable [N] markers). Only cache real answers —
+    # caching the safety-net fallback would lock the user into an error
+    # message on retries. No artifact field anymore; the replay path also
+    # tolerates legacy entries with an "artifacts" key by promoting the
+    # first artifact's body to inline text.
+    if query_text and synthesis_ok:
         cache_payload = json.dumps({
             "text": full_text,
-            "artifacts": artifacts_emitted,
             "citations": latest_citations,
         })
         await _safe_cache_store(query_text, cache_payload)
 
     yield _ui_part({"type": "finish"})
     yield b"data: [DONE]\n\n"
-
-
-def _derive_artifact_title(messages: list[dict[str, Any]]) -> str:
-    """Best-effort title for an auto-promoted artifact.
-
-    Pulls the most recent user message text and trims it to a short
-    title-like phrase. Falls back to a generic label if no user text is
-    available.
-    """
-    for msg in reversed(messages):
-        if msg.get("role") != "user":
-            continue
-        content = msg.get("content")
-        if isinstance(content, str):
-            text = content
-        elif isinstance(content, list):
-            text = " ".join(
-                str(part.get("text", ""))
-                for part in content
-                if isinstance(part, dict) and part.get("type") == "text"
-            )
-        else:
-            continue
-        text = text.strip()
-        if not text:
-            continue
-        # Compact whitespace and cap at ~60 chars on a word boundary.
-        text = " ".join(text.split())
-        if len(text) <= 60:
-            return text
-        head = text[:60]
-        last_space = head.rfind(" ")
-        return (head[:last_space] if last_space > 30 else head) + "…"
-    return "Research notes"
 
 
 def build_app() -> FastAPI:

@@ -200,16 +200,11 @@ def _run_evaluate(
 async def _collect_answer(question: str) -> tuple[str, list[str]]:
     """Drain run_agent and return the answer plus contexts the agent used.
 
-    The agent's system prompt routes substantive output to ``create_artifact``
-    and keeps the inline chat stream to a 1-3 sentence framing message. To
-    score what the user actually reads, we concatenate both the streamed text
-    and every artifact's ``content`` body — otherwise RAGAS faithfulness
-    measures only the uncited preamble and collapses for any non-trivial
-    question.
-
-    Contexts are accumulated across every ``retrieve_chunks`` call rather than
-    overwritten, so multi-step research turns surface the full evidence set
-    the agent saw.
+    The agent streams the full answer inline (artifacts were retired —
+    prose replies are no longer routed to a side-panel). Contexts are
+    accumulated across every ``retrieve_chunks`` call rather than
+    overwritten, so multi-step research turns surface the full evidence
+    set the agent saw.
     """
     parts: list[str] = []
     used_contexts: list[str] = []
@@ -218,10 +213,6 @@ async def _collect_answer(question: str) -> tuple[str, list[str]]:
         async for event in run_agent(question):
             if event["type"] == "text":
                 parts.append(event["content"])
-            elif event["type"] == "artifact":
-                content = event.get("content", "")
-                if content:
-                    parts.append("\n\n" + content)
             elif event["type"] == "tool_result" and event.get("name") == "retrieve_chunks":
                 for ctx in event.get("contexts", []):
                     if ctx and ctx not in seen_contexts:

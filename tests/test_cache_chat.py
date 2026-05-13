@@ -42,11 +42,24 @@ def _identity_normalise(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return messages
 
 
+async def _fake_run_web_search(query: str) -> tuple[str, list[dict[str, Any]]]:
+    return "No results found.", []
+
+
+async def _fake_run_scrape_and_index(url: str) -> str:
+    return f"Indexed 0 chunks from {url}."
+
+
 _agent_stub = types.ModuleType("backend.agent")
 _agent_stub.run_agent = _fake_run_agent  # type: ignore[attr-defined]
 _agent_stub.run_chat = _fake_run_chat  # type: ignore[attr-defined]
 _agent_stub.DeepSearchAgent = _FakeDeepSearchAgent  # type: ignore[attr-defined]
 _agent_stub.normalise_messages_for_openrouter = _identity_normalise  # type: ignore[attr-defined]
+# Sub-agent (backend.research.subagent) imports these directly at module
+# load time, so the stub has to expose them or the whole test module
+# fails to collect.
+_agent_stub._run_web_search = _fake_run_web_search  # type: ignore[attr-defined]
+_agent_stub._run_scrape_and_index = _fake_run_scrape_and_index  # type: ignore[attr-defined]
 sys.modules.setdefault("backend.agent", _agent_stub)
 
 from backend import main  # noqa: E402
@@ -78,7 +91,6 @@ async def _hit_lookup(query: str) -> str | None:
 
     return _json.dumps({
         "text": "cached answer from upstash",
-        "artifacts": [],
         "citations": [],
     })
 
@@ -150,8 +162,8 @@ async def test_chat_cache_miss_calls_run_chat_and_stores_answer(
     """Cache miss: run_chat runs and the final answer is stored in cache.
 
     The stored payload is a JSON string with shape
-    ``{"text": ..., "artifacts": [...], "citations": [...]}`` so a hit
-    can replay the full UI shape, not just inline text.
+    ``{"text": ..., "citations": [...]}`` so a hit can replay the
+    streamed reply plus its [N] → URL map.
     """
     import json as _json
 
@@ -174,65 +186,22 @@ async def test_chat_cache_miss_calls_run_chat_and_stores_answer(
     assert stored.get("query") == "What is machine learning?"
     payload = _json.loads(stored["answer"])
     assert payload["text"] == "freshly computed answer"
-    assert payload["artifacts"] == []
     assert payload["citations"] == []
+    assert "artifacts" not in payload
 
 
 @pytest.mark.asyncio
-async def test_chat_artifact_only_response_is_cached(
+async def test_chat_legacy_artifact_cache_replays_as_inline_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression: when the agent answers only via create_artifact (no
-    streamed text), the artifact must still land in the cache. Previously
-    the cache stored only ``"".join(text_buffer)`` which was empty in this
-    path, so the cache stayed empty and identical follow-ups re-ran the
-    full pipeline.
+    """Back-compat: cache entries written before artifacts were retired
+    still carry the answer in an ``artifacts`` array with empty ``text``.
+    Replay must promote the first artifact's body to inline text so the
+    user still sees the answer rather than a ghost message.
     """
     import json as _json
 
-    async def _artifact_only_run_chat(
-        messages: list[dict[str, Any]], **kwargs: Any
-    ) -> AsyncGenerator[dict[str, Any], None]:
-        yield {
-            "type": "artifact",
-            "artifact_id": "11111111-1111-1111-1111-111111111111",
-            "kind": "text",
-            "title": "ML overview",
-            "content": "Machine learning is...",
-        }
-
-    stored: dict[str, str] = {}
-
-    async def _capture_store(query: str, answer: str) -> None:
-        stored["query"] = query
-        stored["answer"] = answer
-
-    monkeypatch.setattr(main, "cache_lookup", _miss_lookup)
-    monkeypatch.setattr(main, "cache_store", _capture_store)
-    monkeypatch.setattr(main, "run_chat", _artifact_only_run_chat)
-
-    transport = httpx.ASGITransport(app=main.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post("/chat", json=_SINGLE_TURN_BODY)
-
-    assert response.status_code == 200
-    assert stored.get("query") == "What is machine learning?"
-    payload = _json.loads(stored["answer"])
-    assert payload["text"] == ""
-    assert len(payload["artifacts"]) == 1
-    assert payload["artifacts"][0]["title"] == "ML overview"
-    assert payload["artifacts"][0]["content"] == "Machine learning is..."
-
-
-@pytest.mark.asyncio
-async def test_chat_cache_hit_replays_artifact(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A cached structured payload with an artifact must replay as a
-    data-artifact stream part, not as inline text."""
-    import json as _json
-
-    async def _artifact_payload_lookup(query: str) -> str | None:
+    async def _legacy_artifact_payload_lookup(query: str) -> str | None:
         return _json.dumps({
             "text": "",
             "artifacts": [
@@ -246,7 +215,7 @@ async def test_chat_cache_hit_replays_artifact(
             "citations": [],
         })
 
-    monkeypatch.setattr(main, "cache_lookup", _artifact_payload_lookup)
+    monkeypatch.setattr(main, "cache_lookup", _legacy_artifact_payload_lookup)
     monkeypatch.setattr(main, "cache_store", _noop_store)
     monkeypatch.setattr(main, "run_chat", _fake_run_chat)
 
@@ -256,9 +225,10 @@ async def test_chat_cache_hit_replays_artifact(
 
     body = response.text
     assert response.status_code == 200
-    assert '"type":"data-artifact"' in body
-    assert "Cached ML overview" in body
+    assert '"type":"text-delta"' in body
     assert "ML is a subfield of AI." in body
+    # Artifacts are no longer emitted as stream parts — the body lives inline.
+    assert '"type":"data-artifact"' not in body
 
 
 @pytest.mark.asyncio
