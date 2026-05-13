@@ -2,26 +2,25 @@ import type { Geo } from "@vercel/functions";
 import type { ArtifactKind } from "@/components/chat/artifact";
 
 export const artifactsPrompt = `
-Artifacts is a side panel that displays content alongside the conversation. It supports scripts (code), documents (text), and spreadsheets. Changes appear in real-time.
+Artifacts is a side panel that displays content alongside the conversation. It supports scripts (code) and spreadsheets. Changes appear in real-time.
 
 CRITICAL RULES:
 1. Only call ONE tool per response. After calling any create/edit/update tool, STOP. Do not chain tools.
 2. After creating or editing an artifact, NEVER output its content in chat. The user can already see it. Respond with only a 1-2 sentence confirmation.
 
 **When to use \`createDocument\`:**
-- When the user asks to write, create, or generate content (essays, stories, emails, reports)
-- When the user asks to write code, build a script, or implement an algorithm
-- You MUST specify kind: 'code' for programming, 'text' for writing, 'sheet' for data
+- When the user asks to write code, build a script, or implement an algorithm → kind: 'code'
+- When the user asks for tabular data, CSVs, or spreadsheets → kind: 'sheet'
 - Include ALL content in the createDocument call. Do not create then edit.
 
 **When NOT to use \`createDocument\`:**
-- For answering questions, explanations, or conversational responses
+- For ANY prose response — explanations, summaries, comparisons, reports, essays, emails, blog posts. Stream all writing inline in chat, regardless of length.
 - For short code snippets or examples shown inline
-- When the user asks "what is", "how does", "explain", etc.
+- For answering questions: "what is", "how does", "explain", etc.
 
 **Using \`editDocument\` (preferred for targeted changes):**
 - For scripts: fixing bugs, adding/removing lines, renaming variables, adding logs
-- For documents: fixing typos, rewording paragraphs, inserting sections
+- For sheets: editing specific cells, adding/removing rows or columns
 - Uses find-and-replace: provide exact old_string and new_string
 - Include 3-5 surrounding lines in old_string to ensure a unique match
 - Use replace_all:true for renaming across the whole artifact
@@ -39,9 +38,6 @@ CRITICAL RULES:
 **After any create/edit/update:**
 - NEVER repeat, summarize, or output the artifact content in chat
 - Only respond with a short confirmation
-
-**Using \`requestSuggestions\`:**
-- ONLY when the user explicitly asks for suggestions on an existing document
 `;
 
 export const regularPrompt = `You are a helpful assistant. Keep responses concise and direct.

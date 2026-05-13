@@ -1,9 +1,6 @@
 "use client";
 
-import {
-  defaultMarkdownSerializer,
-  MarkdownSerializer,
-} from "prosemirror-markdown";
+import { defaultMarkdownSerializer } from "prosemirror-markdown";
 import { DOMParser, type Node } from "prosemirror-model";
 import { Decoration, DecorationSet, type EditorView } from "prosemirror-view";
 import { renderToString } from "react-dom/server";
@@ -12,23 +9,6 @@ import { MessageResponse } from "@/components/ai-elements/message";
 
 import { documentSchema } from "./config";
 import type { UISuggestion } from "./suggestions";
-
-// `sup` (citation marker) serializes to nothing on either side — the
-// raw markdown stays as `[N]`, and the rehype pipeline re-wraps it in
-// <sup> on the next load. Without this rule prosemirror-markdown
-// would throw on encountering the unknown mark.
-const documentMarkdownSerializer = new MarkdownSerializer(
-  defaultMarkdownSerializer.nodes,
-  {
-    ...defaultMarkdownSerializer.marks,
-    sup: {
-      open: "",
-      close: "",
-      mixable: true,
-      expelEnclosingWhitespace: true,
-    },
-  }
-);
 
 export const buildDocumentFromContent = (content: string) => {
   const parser = DOMParser.fromSchema(documentSchema);
@@ -41,7 +21,7 @@ export const buildDocumentFromContent = (content: string) => {
 };
 
 export const buildContentFromDocument = (document: Node) => {
-  return documentMarkdownSerializer.serialize(document);
+  return defaultMarkdownSerializer.serialize(document);
 };
 
 export const createDecorations = (

@@ -20,7 +20,6 @@ import { code } from "@streamdown/code";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import { CitationAnchor } from "./citation-anchor";
-import { rehypeCitationSup } from "./rehype-citation-sup";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import {
   createContext,
@@ -327,18 +326,9 @@ const streamdownPlugins = { cjk, code, math, mermaid };
 // they read like academic / Wikipedia footnotes; non-citation anchors
 // fall through to streamdown's default rendering.
 const streamdownComponents = { a: CitationAnchor };
-// Rehype-side companion: catches bare `[N]` text (no surrounding link —
-// e.g. text-artifact bodies that the LLM wrote without a citations
-// map) and wraps it in <sup class="citation-ref"> for the same look.
-const streamdownRehypePlugins = [rehypeCitationSup];
 
 export const MessageResponse = memo(
-  ({
-    className,
-    components,
-    rehypePlugins,
-    ...props
-  }: MessageResponseProps) => (
+  ({ className, components, ...props }: MessageResponseProps) => (
     <Streamdown
       className={cn(
         "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
@@ -346,7 +336,6 @@ export const MessageResponse = memo(
       )}
       components={{ ...streamdownComponents, ...components }}
       plugins={streamdownPlugins}
-      rehypePlugins={[...streamdownRehypePlugins, ...(rehypePlugins ?? [])]}
       {...props}
     />
   ),

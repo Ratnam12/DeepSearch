@@ -1,7 +1,6 @@
 import type { UIMessageStreamWriter } from "ai";
 import { codeDocumentHandler } from "@/artifacts/code/server";
 import { sheetDocumentHandler } from "@/artifacts/sheet/server";
-import { textDocumentHandler } from "@/artifacts/text/server";
 import { type DocumentKind, saveDocument } from "../db/queries";
 import type { Document } from "../db/schema";
 import type { ChatMessage } from "../types";
@@ -96,10 +95,13 @@ export function createDocumentHandler<T extends DocumentKind>(config: {
   };
 }
 
+// `text` was removed: prose responses stream inline in chat instead of
+// being routed into an editable artifact. Existing text rows still
+// render via `textArtifact` on the client, but no new ones can be
+// created and no edit handler is registered.
 export const documentHandlersByArtifactKind: DocumentHandler[] = [
-  textDocumentHandler,
   codeDocumentHandler,
   sheetDocumentHandler,
 ];
 
-export const artifactKinds = ["text", "code", "sheet"] as const;
+export const artifactKinds = ["code", "sheet"] as const;
