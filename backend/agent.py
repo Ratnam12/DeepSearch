@@ -22,12 +22,20 @@ from backend.cache import SemanticCache
 from backend.chunker import chunk_documents, chunk_text
 from backend.config import get_settings
 from backend.embedder import embed, embed_batch
-from backend.retriever import hybrid_search, retrieve_chunks, upsert_chunks
+from backend.retriever import (
+    hybrid_search,
+    hybrid_search_multi,
+    retrieve_chunks,
+    upsert_chunks,
+)
 from backend.scraper import scrape_url, scrape_urls
 from backend.llm import synthesise_answer
 from backend.model_router import FLASH, llm_route_model, log_cost, route_model
 from backend.security import sanitize
-from backend.dspy_modules import generate_candidate as _dspy_candidate
+from backend.dspy_modules import (
+    decompose_query as _dspy_decompose,
+    generate_candidate as _dspy_candidate,
+)
 
 
 logger = logging.getLogger("deepsearch")
@@ -245,15 +253,52 @@ def _chunk_contexts(chunks: list[dict[str, Any]]) -> list[str]:
     return [str(c["text"]) for c in chunks if c.get("text")]
 
 
+async def _decompose_to_subqueries(query: str) -> list[str]:
+    """Decompose a research question into the user query + up to 3 sub-queries.
+
+    Synthesis questions (e.g. "primary failure modes of a production RAG
+    pipeline") carry 8-15 distinct claims in their ground-truth answers,
+    spread across orthogonal subspaces. A single embedding can't cover all
+    of them — running retrieval per sub-query and reranking the union is
+    the standard fix for low context_recall in RAG evals.
+
+    Falls back to ``[query]`` on any failure so retrieval still happens.
+    The DSPy ``decompose_query`` predictor is synchronous and CPU-bound on
+    the JSON-parse side; offload to a thread to avoid blocking the loop.
+    """
+    if not query.strip():
+        return [query]
+    try:
+        result = await asyncio.to_thread(_dspy_decompose, question=query)
+        parsed = json.loads(result.queries) if isinstance(result.queries, str) else result.queries
+        sub_queries = [q.strip() for q in parsed if isinstance(q, str) and q.strip()]
+        if sub_queries:
+            # Always include the original query first — the reranker scores
+            # against it, so it anchors the precision side of the trade-off.
+            seen: set[str] = set()
+            out: list[str] = []
+            for q in [query, *sub_queries]:
+                norm = q.strip().lower()
+                if norm and norm not in seen:
+                    seen.add(norm)
+                    out.append(q.strip())
+            return out
+    except Exception as exc:  # noqa: BLE001 — any decomposition failure → fallback
+        logger.warning("decompose_query failed: %s — using literal query", exc)
+    return [query]
+
+
 async def _run_retrieve_chunks(query: str) -> str:
-    """Hybrid-search and return top chunks formatted for the LLM context window."""
-    chunks = await hybrid_search(query)
+    """Decompose, hybrid-search every sub-query, dedupe by point id, rerank, format."""
+    sub_queries = await _decompose_to_subqueries(query)
+    chunks = await hybrid_search_multi(sub_queries, primary_query=query)
     return _format_chunks(chunks)
 
 
 async def _retrieve_chunks_with_contexts(query: str) -> tuple[str, list[str]]:
-    """Hybrid-search and return both formatted and raw chunk text contexts."""
-    chunks = await hybrid_search(query)
+    """Decompose + multi-query hybrid search, return both formatted + raw contexts."""
+    sub_queries = await _decompose_to_subqueries(query)
+    chunks = await hybrid_search_multi(sub_queries, primary_query=query)
     return _format_chunks(chunks), _chunk_contexts(chunks)
 
 
@@ -320,7 +365,8 @@ async def _execute_tool_calls(
         try:
             if fn_name == "retrieve_chunks":
                 query = json.loads(fn_args).get("query", "")
-                raw_chunks = await hybrid_search(query)
+                sub_queries = await _decompose_to_subqueries(query)
+                raw_chunks = await hybrid_search_multi(sub_queries, primary_query=query)
                 refusal = check_confidence(raw_chunks)
                 result = _format_chunks(raw_chunks)
                 contexts = _chunk_contexts(raw_chunks)
@@ -675,11 +721,17 @@ async def _stream_completion(
     ``extra_body``). They show up in the OR dashboard's Sessions tab and
     let us see cost-per-conversation rather than just per-generation.
     """
+    # max_tokens cap prevents OpenRouter's credit-based 402 from rejecting
+    # the request when remaining_budget < model_default_max (which for
+    # frontier chat models is 65536 = 2^16). Largest real artifact in the
+    # eval set was ~10k chars ≈ 2.5k tokens, so 8192 is generous headroom
+    # without leaving cost upside on the table.
     kwargs: dict[str, Any] = {
         "model": model,
         "messages": history,
         "stream": True,
         "stream_options": {"include_usage": True},
+        "max_tokens": 8192,
     }
     if tools:
         kwargs["tools"] = tools

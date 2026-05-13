@@ -45,8 +45,14 @@ class Settings(BaseSettings):
     chunk_min_length: int = 80
 
     # ── Retrieval ──────────────────────────────────────────────────────────
-    top_k_retrieval: int = 25
-    top_k_final: int = 5
+    # top_k_final was 5 — RAGAS context_recall measured 0.48, meaning the
+    # LLM was only seeing half the ground-truth claims. Bumped to 12 so
+    # synthesis questions with 8-15 claim ground_truths can actually be
+    # covered. top_k_retrieval widened to 50 to give the cross-encoder a
+    # wider candidate pool to rank from, which preserves precision as
+    # top_k_final grows.
+    top_k_retrieval: int = 50
+    top_k_final: int = 12
     confidence_threshold: float = 0.65
 
     # ── Multi-candidate synthesis ───────────────────────────────────────────

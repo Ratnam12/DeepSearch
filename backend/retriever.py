@@ -1,16 +1,25 @@
 """
 Vector retrieval via Qdrant.
 Single responsibility: upsert and query the vector store.
+
+Retrieval stack (post-BM25 / BGE upgrade):
+- Dense: ``text-embedding-3-small`` (1536-dim, cosine).
+- Sparse: ``Qdrant/bm25`` via FastEmbed — proper Okapi BM25 with IDF and no
+  hash collisions. Replaces the prior hash-bucketed word-frequency vector
+  which was effectively noise at ~76% collision load.
+- Fusion: Reciprocal Rank Fusion inside Qdrant ``query_points``.
+- Rerank: ``BAAI/bge-reranker-v2-m3`` (Apache-2.0, 568M params) — ~+0.10
+  nDCG@10 over the prior ms-marco-MiniLM-L-6-v2 on BEIR.
 """
 
 from __future__ import annotations
 
 import asyncio
-import re
-from collections import Counter
+import threading
 from typing import Any
 from uuid import uuid4
 
+from fastembed import SparseTextEmbedding
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
     Distance,
@@ -29,18 +38,44 @@ from backend.embedder import embed, embed_batch
 
 _COLLECTION = "deepsearch"
 _VECTOR_SIZE = 1536   # text-embedding-3-small output dimension
-_SPARSE_DIM = 65536   # hash space for sparse word-frequency vectors
-_RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
+_BM25_MODEL = "Qdrant/bm25"
 
 _client: AsyncQdrantClient | None = None
 _reranker: CrossEncoder | None = None
+_bm25: SparseTextEmbedding | None = None
+# Serialize lazy-init across threads. Without this, concurrent ``to_thread``
+# calls race on first use and tqdm (which fastembed's HF downloader uses)
+# trips over its uninitialised class ``_lock`` attribute. The locks are also
+# defensive against the reranker download having the same shape.
+_bm25_lock = threading.Lock()
+_reranker_lock = threading.Lock()
 
 
 def _get_reranker() -> CrossEncoder:
     global _reranker
     if _reranker is None:
-        _reranker = CrossEncoder(_RERANKER_MODEL)
+        with _reranker_lock:
+            if _reranker is None:
+                _reranker = CrossEncoder(_RERANKER_MODEL)
     return _reranker
+
+
+def _get_bm25() -> SparseTextEmbedding:
+    """Lazy-init the BM25 sparse model. First call triggers a ~6MB download.
+
+    Double-checked locking — the first concurrent caller pays the download
+    cost; the rest wait on the lock and then hit the cached instance. The
+    lock is necessary because FastEmbed downloads via HuggingFace's snapshot
+    downloader, which uses tqdm in a thread pool; without serialisation the
+    first run races on tqdm's class state.
+    """
+    global _bm25
+    if _bm25 is None:
+        with _bm25_lock:
+            if _bm25 is None:
+                _bm25 = SparseTextEmbedding(_BM25_MODEL)
+    return _bm25
 
 
 def _get_client() -> AsyncQdrantClient:
@@ -87,23 +122,27 @@ async def reset_collection() -> None:
     await ensure_collection()
 
 
-def _build_sparse_vector(text: str) -> SparseVector:
-    """Return a sparse vector built from word frequencies using hash bucketing.
+def _build_sparse_doc_vectors(texts: list[str]) -> list[SparseVector]:
+    """Build BM25 sparse vectors for document indexing (IDF-weighted)."""
+    bm25 = _get_bm25()
+    return [
+        SparseVector(indices=e.indices.tolist(), values=e.values.tolist())
+        for e in bm25.embed(texts)
+    ]
 
-    Each unique word is bucketed via ``hash(word) % 65536``.  Collisions are
-    handled by accumulating frequencies into the same bucket index.
+
+def _build_sparse_query_vector(text: str) -> SparseVector:
+    """Build a BM25 sparse vector for a single query (term-presence weighted).
+
+    ``query_embed`` skips IDF on the query side per the Okapi BM25 spec —
+    the IDF lives in the indexed document vectors.
     """
-    words = re.findall(r"\w+", text.lower())
-    counts = Counter(words)
-
-    bucket: dict[int, float] = {}
-    for word, freq in counts.items():
-        idx = hash(word) % _SPARSE_DIM
-        bucket[idx] = bucket.get(idx, 0.0) + float(freq)
-
-    indices = sorted(bucket.keys())
-    values = [bucket[i] for i in indices]
-    return SparseVector(indices=indices, values=values)
+    bm25 = _get_bm25()
+    [embedding] = list(bm25.query_embed([text]))
+    return SparseVector(
+        indices=embedding.indices.tolist(),
+        values=embedding.values.tolist(),
+    )
 
 
 async def upsert_chunks(chunks: list[dict[str, Any]]) -> None:
@@ -120,13 +159,16 @@ async def upsert_chunks(chunks: list[dict[str, Any]]) -> None:
 
     texts = [chunk.get("text", "") for chunk in chunks]
     dense_vectors = await embed_batch(texts)
+    # BM25 embedding is CPU-only and synchronous — offload to a thread so it
+    # doesn't block the event loop on large batches.
+    sparse_vectors = await asyncio.to_thread(_build_sparse_doc_vectors, texts)
 
     points = [
         PointStruct(
             id=str(uuid4()),
             vector={
                 "dense": dense_vectors[i],
-                "sparse": _build_sparse_vector(texts[i]),
+                "sparse": sparse_vectors[i],
             },
             payload=chunk,
         )
@@ -159,23 +201,20 @@ async def retrieve_chunks(
     ]
 
 
-async def hybrid_search(query: str) -> list[dict[str, Any]]:
-    """Retrieve chunks via hybrid dense + sparse search, then cross-encoder reranking.
+async def _candidates_for_query(
+    query: str,
+    settings: Any,
+    client: AsyncQdrantClient,
+) -> list[tuple[Any, dict[str, Any]]]:
+    """Run one hybrid retrieval round and return ``(point_id, chunk_dict)`` pairs.
 
-    Pipeline:
-    1. Two ``Prefetch`` legs (dense ANN + sparse dot-product) run in parallel
-       inside Qdrant and are merged with Reciprocal Rank Fusion.  The fused
-       recall set is sized to ``top_k_retrieval`` so the reranker sees a wide
-       candidate pool.
-    2. The cross-encoder scores every (query, chunk) pair in one batch call
-       and the results are sorted by ``rerank_score`` descending.
-    3. Only the top ``top_k_final`` chunks are returned.
+    Returns the raw fused candidates pre-rerank. Splitting this out lets
+    :func:`hybrid_search_multi` collect candidates from several sub-queries
+    and dedupe by point id before paying for a single rerank pass over the
+    union.
     """
-    settings = get_settings()
-    client = _get_client()
-
     dense_vec = await embed(query)
-    sparse_vec = _build_sparse_vector(query)
+    sparse_vec = await asyncio.to_thread(_build_sparse_query_vector, query)
 
     response = await client.query_points(
         collection_name=_COLLECTION,
@@ -195,16 +234,37 @@ async def hybrid_search(query: str) -> list[dict[str, Any]]:
         limit=settings.top_k_retrieval,
         with_payload=True,
     )
-
-    candidates = [
-        {
-            "text": hit.payload.get("text", ""),
-            "source_url": hit.payload.get("source_url", ""),
-            "title": hit.payload.get("title", ""),
-            "score": hit.score,
-        }
+    return [
+        (
+            hit.id,
+            {
+                "text": hit.payload.get("text", ""),
+                "source_url": hit.payload.get("source_url", ""),
+                "title": hit.payload.get("title", ""),
+                "score": hit.score,
+            },
+        )
         for hit in response.points
     ]
+
+
+async def hybrid_search(query: str) -> list[dict[str, Any]]:
+    """Retrieve chunks via hybrid dense + sparse search, then cross-encoder reranking.
+
+    Pipeline:
+    1. Two ``Prefetch`` legs (dense ANN + sparse BM25) run in parallel inside
+       Qdrant and are merged with Reciprocal Rank Fusion. The fused recall set
+       is sized to ``top_k_retrieval`` so the reranker sees a wide candidate
+       pool.
+    2. The cross-encoder scores every (query, chunk) pair in one batch call
+       and the results are sorted by ``rerank_score`` descending.
+    3. Only the top ``top_k_final`` chunks are returned.
+    """
+    settings = get_settings()
+    client = _get_client()
+
+    id_chunk_pairs = await _candidates_for_query(query, settings, client)
+    candidates = [c for _, c in id_chunk_pairs]
 
     if not candidates:
         return []
@@ -214,6 +274,56 @@ async def hybrid_search(query: str) -> list[dict[str, Any]]:
 
     # predict() is CPU-bound; offload to a thread to avoid blocking the loop.
     rerank_scores: list[float] = await asyncio.to_thread(reranker.predict, pairs)
+
+    for chunk, rerank_score in zip(candidates, rerank_scores):
+        chunk["rerank_score"] = float(rerank_score)
+
+    candidates.sort(key=lambda c: c["rerank_score"], reverse=True)
+    return candidates[: settings.top_k_final]
+
+
+async def hybrid_search_multi(
+    queries: list[str],
+    primary_query: str,
+) -> list[dict[str, Any]]:
+    """Retrieve via hybrid search across several sub-queries with one shared rerank pass.
+
+    Each sub-query in ``queries`` produces its own dense+sparse fused candidate
+    list. The union (deduped by Qdrant point id) is scored by the cross-encoder
+    against ``primary_query`` — typically the user's original question — so the
+    reranker concentrates precision on what the user actually asked, while the
+    sub-queries cast a wider recall net.
+
+    This is the multi-claim path for synthesis questions whose ground truths
+    span orthogonal subspaces (e.g. "primary failure modes of a RAG pipeline").
+    A single embedding cannot span those subspaces; running retrieval per
+    decomposed sub-query and reranking the union solves that.
+    """
+    if not queries:
+        return []
+    settings = get_settings()
+    client = _get_client()
+
+    # Run all hybrid retrievals concurrently.
+    candidate_lists = await asyncio.gather(
+        *[_candidates_for_query(q, settings, client) for q in queries]
+    )
+
+    seen_ids: set = set()
+    candidates: list[dict[str, Any]] = []
+    for pairs in candidate_lists:
+        for point_id, chunk in pairs:
+            if point_id in seen_ids:
+                continue
+            seen_ids.add(point_id)
+            candidates.append(chunk)
+
+    if not candidates:
+        return []
+
+    reranker = _get_reranker()
+    rerank_pairs = [(primary_query, c["text"]) for c in candidates]
+    rerank_scores: list[float] = await asyncio.to_thread(reranker.predict, rerank_pairs)
 
     for chunk, rerank_score in zip(candidates, rerank_scores):
         chunk["rerank_score"] = float(rerank_score)

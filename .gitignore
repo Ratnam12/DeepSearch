@@ -1,8 +1,12 @@
 .env
-venv/
+.venv/
 __pycache__/
 *.pyc
 .DS_Store
 qdrant_storage/
 chatbot/
 frontend.bak/
+
+# RAGAS per-row diagnostic dump — regenerated on every eval run, contains
+# answers + ground-truths and is too noisy to track in git.
+tests/ragas_per_row_dump.json
