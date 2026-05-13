@@ -3,8 +3,8 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { ChevronDownIcon } from "lucide-react";
 import { useEffect, useId, useState } from "react";
+import { DotsRing } from "@/components/ui/loader-dots-ring";
 import { cn } from "@/lib/utils";
-import { DeepSearchMark } from "./deepsearch-mark";
 import {
   type DeepSearchToolPart,
   DeepSearchToolStep,
@@ -28,7 +28,7 @@ const HEADERS_BY_DOMINANT_TOOL: Record<string, string> = {
   create_artifact: "Created artifact",
 };
 
-function summaryLabel(tools: DeepSearchToolPart[]): string {
+function summaryLabel(tools: DeepSearchToolPart[], allDone: boolean): string {
   const counts = new Map<string, number>();
   for (const t of tools) {
     const name = toolName(t);
@@ -36,7 +36,6 @@ function summaryLabel(tools: DeepSearchToolPart[]): string {
   }
 
   const total = tools.length;
-  const allDone = tools.every((t) => t.state === "output-available");
   const verb = allDone ? "Researched" : "Researching";
 
   if (counts.size === 1) {
@@ -79,6 +78,8 @@ export function DeepSearchToolGroup({
     return null;
   }
 
+  const allDone = tools.every((t) => t.state === "output-available");
+
   return (
     <div className="my-1 max-w-[min(100%,640px)]">
       <button
@@ -96,11 +97,23 @@ export function DeepSearchToolGroup({
         }}
         type="button"
       >
-        <DeepSearchMark
-          className={cn("shrink-0", !collapsed && "animate-pulse")}
-          size={14}
-        />
-        <span className="truncate font-medium">{summaryLabel(tools)}</span>
+        {/*
+         * No icon once research is complete — the assistant avatar on
+         * the left already identifies the message; a second DeepSearch
+         * mark here was reading as a duplicate. While research is in
+         * flight we show the same DotsRing the research-artifact card
+         * uses, so the loading affordance feels consistent across both
+         * surfaces.
+         */}
+        {allDone ? null : (
+          <DotsRing
+            aria-label="Researching"
+            className="size-3.5 shrink-0 text-primary"
+          />
+        )}
+        <span className="truncate font-medium">
+          {summaryLabel(tools, allDone)}
+        </span>
         <motion.span
           animate={{ rotate: open ? 180 : 0 }}
           aria-hidden
