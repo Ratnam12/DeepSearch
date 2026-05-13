@@ -169,11 +169,16 @@ _SYSTEM_PROMPT = (
 )
 
 
-async def _run_web_search(query: str) -> str:
-    """POST to Serper and return formatted organic results."""
+async def _run_web_search(query: str) -> tuple[str, list[dict[str, Any]]]:
+    """POST to Serper and return (formatted results, citations).
+
+    Citations are ``[{"index": N, "url": ...}]`` pairs matching the ``[N]``
+    markers in the formatted text, so the frontend can turn the model's
+    bracketed citations into clickable source links.
+    """
     if not isinstance(query, str) or not query.strip():
         logger.warning("web_search called with empty/invalid query: %r", query)
-        return "No results found."
+        return "No results found.", []
     query = query.strip()
     settings = get_settings()
     headers = {"X-API-KEY": settings.serper_api_key, "Content-Type": "application/json"}
@@ -194,7 +199,12 @@ async def _run_web_search(query: str) -> str:
         f"[{i + 1}] {r.get('title', '')} — {r.get('link', '')}\n{r.get('snippet', '')}"
         for i, r in enumerate(organic)
     ]
-    return "\n\n".join(lines) or "No results found."
+    citations = [
+        {"index": i + 1, "url": r.get("link", "")}
+        for i, r in enumerate(organic)
+        if r.get("link")
+    ]
+    return ("\n\n".join(lines) or "No results found."), citations
 
 
 async def _run_scrape_and_index(url: str) -> str:
@@ -307,7 +317,8 @@ async def _dispatch_tool(name: str, arguments: str) -> str:
     args: dict[str, Any] = json.loads(arguments)
     match name:
         case "web_search":
-            return await _run_web_search(args.get("query", ""))
+            text, _citations = await _run_web_search(args.get("query", ""))
+            return text
         case "scrape_and_index":
             return await _run_scrape_and_index(args["url"])
         case "retrieve_chunks":
@@ -370,6 +381,15 @@ async def _execute_tool_calls(
                 refusal = check_confidence(raw_chunks)
                 result = _format_chunks(raw_chunks)
                 contexts = _chunk_contexts(raw_chunks)
+                # Always surface the [N] → URL mapping so the frontend can
+                # turn bracketed citations in the streamed answer into
+                # clickable links. The model receives the chunks even on the
+                # refusal path, so the [N] markers it emits must remain
+                # verifiable. Each tool call overwrites the previous mapping —
+                # last write wins for any given index.
+                citations = _citations_from_chunks(raw_chunks)
+                if citations:
+                    yield {"type": "citations", "items": citations}
                 if refusal:
                     result = (
                         f"{result}\n\n"
@@ -378,15 +398,11 @@ async def _execute_tool_calls(
                         "scrape_and_index, and retrieve_chunks again before answering."
                     )
                     contexts = []
-                else:
-                    # Surface the [N] → URL mapping so the frontend can
-                    # turn bracketed citations in the streamed answer
-                    # into clickable links. Each retrieve_chunks call
-                    # overwrites the previous mapping — the model uses
-                    # the indices from the latest retrieval.
-                    citations = _citations_from_chunks(raw_chunks)
-                    if citations:
-                        yield {"type": "citations", "items": citations}
+            elif fn_name == "web_search":
+                query = json.loads(fn_args).get("query", "")
+                result, citations = await _run_web_search(query)
+                if citations:
+                    yield {"type": "citations", "items": citations}
             elif fn_name == "create_artifact":
                 args = json.loads(fn_args)
                 artifact_id = str(uuid.uuid4())
