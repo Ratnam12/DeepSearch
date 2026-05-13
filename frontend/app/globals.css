@@ -381,6 +381,30 @@ textarea:focus-visible {
   outline: none;
 }
 
+/*
+ * Academic-style citation marker. Emitted by both the streamdown
+ * rehype pipeline (bare `[N]` text) and the CitationAnchor component
+ * (linked `[N]` anchors). Single rule so chat replies, DeepSearch
+ * reports, and the editable text artifact all render identically.
+ */
+sup.citation-ref {
+  font-size: 0.7em;
+  line-height: 0;
+  vertical-align: super;
+  margin-left: 0.05em;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+sup.citation-ref a {
+  color: var(--primary);
+  text-decoration: none;
+}
+
+sup.citation-ref a:hover {
+  text-decoration: underline;
+}
+
 .cm-editor {
   @apply bg-transparent! outline-hidden! text-[13px]! leading-[1.6]!;
   font-family:

@@ -7,6 +7,7 @@ import { mermaid } from "@streamdown/mermaid";
 import { useMemo } from "react";
 import { Streamdown } from "streamdown";
 import { CitationAnchor } from "@/components/ai-elements/citation-anchor";
+import { rehypeCitationSup } from "@/components/ai-elements/rehype-citation-sup";
 import type { ResearchSource } from "@/lib/db/schema";
 
 // Mirrors the chat side's plugin set so reports get the same rich
@@ -18,6 +19,10 @@ const PLUGINS = { cjk, code, math, mermaid };
 // Shared with chat: anchors whose visible text is `[N]` render as a
 // small superscript footnote so the report reads like a paper.
 const COMPONENTS = { a: CitationAnchor };
+// Catches any bare `[N]` that didn't get linkified (e.g. a citation
+// whose URL wasn't in the sources table) and still styles it as a
+// superscript marker for visual consistency.
+const REHYPE_PLUGINS = [rehypeCitationSup];
 
 // Replace bare `[N]` citation markers in the report with markdown
 // links pointing directly at the source URL. The writer prompt asks
@@ -74,6 +79,7 @@ export function ResearchReportRenderer({
       }
       components={COMPONENTS}
       plugins={PLUGINS}
+      rehypePlugins={REHYPE_PLUGINS}
     >
       {linkified}
     </Streamdown>

@@ -41,9 +41,8 @@ export function CitationAnchor({
 
   if (isCitation) {
     return (
-      <sup className="citation-ref ml-[0.05em] align-super text-[0.7em] leading-none">
+      <sup className="citation-ref">
         <a
-          className="font-medium text-primary tabular-nums no-underline hover:underline"
           href={href}
           rel="noopener noreferrer"
           target="_blank"
