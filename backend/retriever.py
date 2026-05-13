@@ -52,12 +52,22 @@ _bm25_lock = threading.Lock()
 _reranker_lock = threading.Lock()
 
 
+def _select_reranker_device() -> str:
+    import torch
+
+    if torch.backends.mps.is_available():
+        return "mps"
+    if torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
+
+
 def _get_reranker() -> CrossEncoder:
     global _reranker
     if _reranker is None:
         with _reranker_lock:
             if _reranker is None:
-                _reranker = CrossEncoder(_RERANKER_MODEL)
+                _reranker = CrossEncoder(_RERANKER_MODEL, device=_select_reranker_device())
     return _reranker
 
 
