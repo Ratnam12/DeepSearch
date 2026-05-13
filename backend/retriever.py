@@ -2,14 +2,15 @@
 Vector retrieval via Qdrant.
 Single responsibility: upsert and query the vector store.
 
-Retrieval stack (post-BM25 / BGE upgrade):
+Retrieval stack:
 - Dense: ``text-embedding-3-small`` (1536-dim, cosine).
 - Sparse: ``Qdrant/bm25`` via FastEmbed — proper Okapi BM25 with IDF and no
   hash collisions. Replaces the prior hash-bucketed word-frequency vector
   which was effectively noise at ~76% collision load.
 - Fusion: Reciprocal Rank Fusion inside Qdrant ``query_points``.
-- Rerank: ``BAAI/bge-reranker-v2-m3`` (Apache-2.0, 568M params) — ~+0.10
-  nDCG@10 over the prior ms-marco-MiniLM-L-6-v2 on BEIR.
+- Rerank: ``cross-encoder/ms-marco-MiniLM-L-6-v2`` (22M params) — small
+  enough to run comfortably on CPU in cloud containers. BGE-v2-m3 was
+  tried but its 568M params made CPU inference unviable in production.
 """
 
 from __future__ import annotations
@@ -38,7 +39,7 @@ from backend.embedder import embed, embed_batch
 
 _COLLECTION = "deepsearch"
 _VECTOR_SIZE = 1536   # text-embedding-3-small output dimension
-_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
+_RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 _BM25_MODEL = "Qdrant/bm25"
 
 _client: AsyncQdrantClient | None = None
