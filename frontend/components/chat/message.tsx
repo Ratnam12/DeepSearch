@@ -53,6 +53,10 @@ function isStepTool(part: { type: string }): boolean {
 // `data-citations` parts emitted after each retrieve_chunks tool call.
 // Markdown link text uses escaped square brackets so streamdown still
 // renders the visible label as `[N]`.
+//
+// The leading `[ \t]?` consumes an optional space before the bracket so
+// the rendered superscript tucks tight against the preceding word
+// (`scattering[1]` rather than `scattering [1]`).
 function linkifyCitations(
   text: string,
   citations: Map<number, string>
@@ -60,7 +64,7 @@ function linkifyCitations(
   if (citations.size === 0) {
     return text;
   }
-  return text.replace(/\[(\d+)\]/g, (match, idxStr) => {
+  return text.replace(/[ \t]?\[(\d+)\]/g, (match, idxStr) => {
     const idx = Number.parseInt(idxStr, 10);
     const url = citations.get(idx);
     return url ? `[\\[${idx}\\]](${url})` : match;

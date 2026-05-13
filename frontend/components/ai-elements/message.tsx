@@ -19,6 +19,7 @@ import { cjk } from "@streamdown/cjk";
 import { code } from "@streamdown/code";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
+import { CitationAnchor } from "./citation-anchor";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import {
   createContext,
@@ -321,14 +322,19 @@ export const MessageBranchPage = ({
 export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 
 const streamdownPlugins = { cjk, code, math, mermaid };
+// Wrap citation-shaped anchors (visible text `[N]`) in a small <sup> so
+// they read like academic / Wikipedia footnotes; non-citation anchors
+// fall through to streamdown's default rendering.
+const streamdownComponents = { a: CitationAnchor };
 
 export const MessageResponse = memo(
-  ({ className, ...props }: MessageResponseProps) => (
+  ({ className, components, ...props }: MessageResponseProps) => (
     <Streamdown
       className={cn(
         "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
         className
       )}
+      components={{ ...streamdownComponents, ...components }}
       plugins={streamdownPlugins}
       {...props}
     />

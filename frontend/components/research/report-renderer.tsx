@@ -6,6 +6,7 @@ import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import { useMemo } from "react";
 import { Streamdown } from "streamdown";
+import { CitationAnchor } from "@/components/ai-elements/citation-anchor";
 import type { ResearchSource } from "@/lib/db/schema";
 
 // Mirrors the chat side's plugin set so reports get the same rich
@@ -14,6 +15,9 @@ import type { ResearchSource } from "@/lib/db/schema";
 // agent is encouraged in its system prompt to emit ```mermaid blocks
 // where they help; this is what renders them.
 const PLUGINS = { cjk, code, math, mermaid };
+// Shared with chat: anchors whose visible text is `[N]` render as a
+// small superscript footnote so the report reads like a paper.
+const COMPONENTS = { a: CitationAnchor };
 
 // Replace bare `[N]` citation markers in the report with markdown
 // links pointing directly at the source URL. The writer prompt asks
@@ -22,7 +26,9 @@ const PLUGINS = { cjk, code, math, mermaid };
 //
 // We deliberately skip cases where ``[N]`` is already part of a
 // markdown link (followed by ``(`` or preceded by ``!``) so we don't
-// mangle existing structure.
+// mangle existing structure. The leading `[ \t]?` swallows the space
+// before the bracket so the rendered <sup> sits tight against the
+// preceding word, matching the chat side.
 function linkifyCitations(
   markdown: string,
   citations: ResearchSource[]
@@ -31,14 +37,17 @@ function linkifyCitations(
   const urlByNum = new Map<number, string>();
   for (const c of citations) urlByNum.set(c.citationNum, c.url);
 
-  return markdown.replace(/(?<![!\\])\[(\d+)\](?!\()/g, (match, n: string) => {
-    const num = Number.parseInt(n, 10);
-    const url = urlByNum.get(num);
-    if (!url) return match;
-    // Escaped brackets in the link text so streamdown renders the
-    // visible label as ``[N]`` instead of ``N``.
-    return `[\\[${num}\\]](${url})`;
-  });
+  return markdown.replace(
+    /(?<![!\\])[ \t]?\[(\d+)\](?!\()/g,
+    (match, n: string) => {
+      const num = Number.parseInt(n, 10);
+      const url = urlByNum.get(num);
+      if (!url) return match;
+      // Escaped brackets in the link text so streamdown renders the
+      // visible label as ``[N]`` instead of ``N``.
+      return `[\\[${num}\\]](${url})`;
+    }
+  );
 }
 
 export function ResearchReportRenderer({
@@ -63,6 +72,7 @@ export function ResearchReportRenderer({
         // tables, and code blocks read well at the report scale.
         "prose prose-sm max-w-none dark:prose-invert prose-headings:scroll-mt-20 prose-h1:font-semibold prose-h1:text-2xl prose-h2:font-semibold prose-h2:text-xl prose-h2:mt-8 prose-h3:font-medium prose-h3:text-lg prose-table:text-sm prose-pre:bg-muted/50 prose-pre:border prose-pre:border-border/60 [&_pre]:rounded-md"
       }
+      components={COMPONENTS}
       plugins={PLUGINS}
     >
       {linkified}
