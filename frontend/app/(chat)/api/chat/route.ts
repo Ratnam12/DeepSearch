@@ -494,26 +494,55 @@ export async function POST(request: Request) {
     return new ChatbotError("offline:chat").toResponse();
   }
 
-  // ── Direct stream pass-through with a tee for persistence ──────────────
+  // ── Direct stream pass-through with buffered persistence ──────────────
   // FastAPI already emits the AI SDK UI Message Stream Protocol verbatim
   // (see backend/main.py::_ui_message_stream), so the simplest correct
-  // proxy is to forward the body bytes unchanged. Wrapping it in
-  // createUIMessageStream forced us to await the full body before flushing
-  // — fine for short replies, fatal for the 30-50s research loop. The tee
-  // duplicates the body so we can persist artifacts and the assistant
-  // message in the background without slowing the user-facing stream.
-  const [forwardStream, observerStream] = backendResponse.body.tee();
+  // proxy is to forward the body bytes unchanged.
+  //
+  // We used to `.tee()` the body so persistence could share the stream
+  // with the client. That coupled the two consumers — if `persistFromStream`
+  // ran even a hair behind the HTTP writer, the shared queue applied
+  // backpressure and the client UI froze mid-stream while the message
+  // landed in Postgres just fine. The symptom users hit: a "Researched · N
+  // steps" tool group appears, but the assistant text never streams in
+  // live; refreshing the page reveals the full answer was saved.
+  //
+  // Decouple them: a pass-through TransformStream forwards every chunk to
+  // the client immediately AND copies the bytes into an in-memory buffer.
+  // Persistence runs after the stream closes, replaying the buffered bytes
+  // through `persistFromStream`. The client now streams at full source
+  // speed; persistence pays its DB latency in the `after()` window once
+  // the response has been delivered.
+  const persistenceChunks: Uint8Array[] = [];
+  const forwardStream = backendResponse.body.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        persistenceChunks.push(chunk);
+        controller.enqueue(chunk);
+      },
+    })
+  );
 
-  const persistencePromise = persistFromStream({
-    stream: observerStream,
-    chatId: id,
-    userId,
-    knownMessageIds: new Set(uiMessages.map((m) => m.id).filter(Boolean)),
-    titleToBroadcast,
+  // `after()` defers the callback until the response has fully flushed —
+  // by that point the TransformStream above has populated
+  // `persistenceChunks` with every byte that went to the client.
+  after(async () => {
+    const replay = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of persistenceChunks) {
+          controller.enqueue(chunk);
+        }
+        controller.close();
+      },
+    });
+    await persistFromStream({
+      stream: replay,
+      chatId: id,
+      userId,
+      knownMessageIds: new Set(uiMessages.map((m) => m.id).filter(Boolean)),
+      titleToBroadcast,
+    });
   });
-  // Don't block the response on the DB writes — Vercel keeps the function
-  // alive for the after() handlers until they resolve.
-  after(persistencePromise);
 
   return new Response(forwardStream, {
     headers: {

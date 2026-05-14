@@ -356,6 +356,68 @@ async def _replay_cached_payload(
     yield b"data: [DONE]\n\n"
 
 
+async def _stream_with_heartbeat(
+    source: AsyncGenerator[bytes, None],
+    *,
+    interval_seconds: float = 3.0,
+) -> AsyncGenerator[bytes, None]:
+    """Forward *source* chunks, injecting an SSE comment heartbeat when
+    the source is quiet for longer than ``interval_seconds``.
+
+    Background: the chat-route proxy + Vercel runtime + any intermediate
+    CDN will happily hold a small SSE chunk in a buffer until either a
+    size threshold is crossed or the response ends. For our agent loop
+    that means text-delta events (~30 bytes each) emitted slowly during
+    the synthesis turn never reach the browser live — the user sees the
+    tool-output-available bursts (large, force-flushed), then nothing
+    until refresh shows the persisted answer.
+
+    A periodic ``: keepalive`` SSE comment is invisible to the AI SDK
+    parser (comments are ignored) but forces the intermediate buffers
+    to flush. We pace it conservatively at 3s so it only fires during
+    actual quiet stretches.
+    """
+    queue: asyncio.Queue[tuple[str, bytes | BaseException | None]] = (
+        asyncio.Queue()
+    )
+    DONE = "done"
+    DATA = "data"
+    ERROR = "error"
+
+    async def pump() -> None:
+        try:
+            async for chunk in source:
+                await queue.put((DATA, chunk))
+        except BaseException as exc:  # noqa: BLE001
+            await queue.put((ERROR, exc))
+        else:
+            await queue.put((DONE, None))
+
+    pump_task = asyncio.create_task(pump())
+    try:
+        while True:
+            try:
+                kind, payload = await asyncio.wait_for(
+                    queue.get(), timeout=interval_seconds
+                )
+            except asyncio.TimeoutError:
+                yield b": keepalive\n\n"
+                continue
+            if kind == DATA and isinstance(payload, bytes):
+                yield payload
+            elif kind == ERROR and isinstance(payload, BaseException):
+                raise payload
+            elif kind == DONE:
+                return
+    finally:
+        if not pump_task.done():
+            pump_task.cancel()
+            try:
+                await pump_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+
 async def _ui_message_stream(
     messages: list[dict[str, Any]],
     model: str | None = None,
@@ -474,6 +536,12 @@ async def _ui_message_stream(
     # a ghost row with only tool parts. Without this the frontend shows
     # the "Researched · N steps" group followed by empty space.
     if not synthesis_ok:
+        logger.warning(
+            "ui_stream safety-net fired (text_started=%s, buffer_chars=%s) — "
+            "emitting fallback so the assistant message is not a ghost row",
+            text_started,
+            sum(len(t) for t in text_buffer),
+        )
         fallback = (
             "I ran the searches but couldn't synthesise a final answer. "
             "Try rephrasing the question or narrowing the scope."
@@ -587,11 +655,13 @@ def build_app() -> FastAPI:
         # for legacy clients that haven't been updated.
         session_id = request.session_id or request.id
         return StreamingResponse(
-            _ui_message_stream(
-                request.messages,
-                model=request.model,
-                session_id=session_id,
-                user_id=request.user_id,
+            _stream_with_heartbeat(
+                _ui_message_stream(
+                    request.messages,
+                    model=request.model,
+                    session_id=session_id,
+                    user_id=request.user_id,
+                ),
             ),
             media_type="text/event-stream",
             headers={

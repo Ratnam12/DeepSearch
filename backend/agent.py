@@ -50,10 +50,24 @@ _openai_client = AsyncOpenAI(
 # Maximum number of tool-call iterations before the loop drops the tool
 # list and forces the model to synthesise an answer from current context.
 # A legitimate research query (web_search → scrape_and_index → retrieve_chunks,
-# maybe one refinement round) tops out at ~3 iterations; 8 is the soft
-# ceiling that catches runaway "keep searching" behaviour before Vercel's
-# 300s function timeout truncates the stream and leaves a ghost message.
-MAX_TOOL_STEPS = 8
+# maybe one refinement round) tops out at ~3 iterations; 5 is the soft
+# ceiling that catches runaway "keep searching" behaviour and keeps the
+# synthesis turn fast enough to finish well inside Vercel's 300s budget.
+# Bigger caps blow up the context the synthesis turn has to digest, which
+# either times out or comes back empty.
+MAX_TOOL_STEPS = 5
+
+# Injected as a final system message when the loop has spent its tool
+# budget. Without it, models trained heavily on tool use will sometimes
+# emit a malformed empty tool_call instead of writing prose. The nudge
+# explicitly tells them: tools are gone, write the answer now.
+_SYNTHESIS_NUDGE = (
+    "You have used your full search budget for this turn. Do NOT attempt to "
+    "call any tools. Write the final answer now in plain markdown text, "
+    "based on the retrieved context above. Cite sources with [N]. If the "
+    "context is genuinely insufficient, say what you do know and what was "
+    "missing — never return an empty reply."
+)
 
 
 TOOLS: list[dict[str, Any]] = [
@@ -831,11 +845,26 @@ async def _agent_loop(
         # longer call anything and must answer from what it has — which
         # is exactly what we want when a query has spiralled into too
         # many searches.
-        tools_for_call = TOOLS if step < MAX_TOOL_STEPS else None
+        budget_exhausted = step >= MAX_TOOL_STEPS
+        tools_for_call = None if budget_exhausted else TOOLS
+
+        # When we strip the tools we also append a one-shot system nudge
+        # to the *call* history (kept local to this turn — never written
+        # back into `history` so the next turn doesn't carry it). Without
+        # this nudge, tool-heavy models routinely emit an empty assistant
+        # message instead of synthesising, which is exactly the
+        # ghost-message bug we're fighting.
+        call_history = history
+        if budget_exhausted:
+            call_history = [*history, {"role": "system", "content": _SYNTHESIS_NUDGE}]
+            logger.info(
+                "agent_loop synthesis turn (step=%s, tools dropped, nudge injected)",
+                step,
+            )
 
         async for event in _stream_completion(
             model=model,
-            history=history,
+            history=call_history,
             tools=tools_for_call,
             session_id=session_id,
             user_id=user_id,
@@ -855,7 +884,17 @@ async def _agent_loop(
             finish_reason=finish_reason,
         )
 
-        if choice.finish_reason == "tool_calls" and tools_for_call is not None:
+        # Treat tool_calls with an empty list as terminal — some upstreams
+        # set finish_reason="tool_calls" even when no actual call was
+        # produced, and looping forever on that is exactly the runaway
+        # we're trying to prevent.
+        has_real_tool_calls = bool(getattr(choice.message, "tool_calls", None))
+
+        if (
+            choice.finish_reason == "tool_calls"
+            and tools_for_call is not None
+            and has_real_tool_calls
+        ):
             async for event in _execute_tool_calls(choice.message, history):
                 if event["type"] == "tool_result" and event["name"] == "retrieve_chunks":
                     new_ctx = event["content"]
@@ -869,10 +908,21 @@ async def _agent_loop(
             step += 1
             if step >= MAX_TOOL_STEPS:
                 logger.warning(
-                    "agent_loop hit MAX_TOOL_STEPS=%s — forcing final answer",
+                    "agent_loop hit MAX_TOOL_STEPS=%s — forcing final answer next turn",
                     MAX_TOOL_STEPS,
                 )
             continue
+
+        # Diagnostic: when the synthesis turn comes back empty, log enough
+        # to triage from Railway logs alone. The `_ui_message_stream`
+        # safety-net will still emit a fallback so the user sees *something*.
+        synth_content = getattr(choice.message, "content", None) or ""
+        if budget_exhausted and not synth_content.strip():
+            logger.warning(
+                "agent_loop synthesis returned empty content (finish=%s, tool_calls=%s)",
+                choice.finish_reason,
+                has_real_tool_calls,
+            )
 
         if choice.finish_reason == "stop":
             content = choice.message.content or ""
