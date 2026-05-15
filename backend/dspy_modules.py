@@ -9,8 +9,18 @@ called by the orchestration layer.
 from __future__ import annotations
 
 import dspy
+import litellm
 
 from backend.config import get_settings
+
+# DSPy import activates litellm's in-memory request cache. On litellm 1.51.0
+# (pinned by dspy 2.5.41) the cache-key builder reads __annotations__ off
+# openai's TranscriptionCreateParams TypedDict, which raises AttributeError
+# on Python 3.12 — once per completion via _get_relevant_args_to_use_for_cache_key
+# and again via get_standard_logging_object_payload. The completion itself
+# still succeeds (HTTP 200), but the error spams production logs. We don't
+# need litellm's cache (we have our own semantic cache), so disable it.
+litellm.cache = None
 
 # ---------------------------------------------------------------------------
 # LM configuration
