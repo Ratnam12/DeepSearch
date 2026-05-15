@@ -61,8 +61,23 @@ class Settings(BaseSettings):
     max_dspy_context_chars: int = 9_000
 
     # ── Semantic cache ─────────────────────────────────────────────────────
-    cache_similarity_threshold: float = 0.70
+    # Cosine threshold raised from 0.70 → 0.75 because text-embedding-3-small
+    # placed semantically distinct queries (e.g. "DSPy in 2023" vs "DSPy in 2026")
+    # at ~0.80. The relevance judge below is the real safeguard against the
+    # remaining gray-zone false positives; this threshold just filters obvious
+    # noise before invoking the judge.
+    cache_similarity_threshold: float = 0.75
     cache_ttl_seconds: int = 3600
+
+    # ── Semantic cache relevance judge ─────────────────────────────────────
+    # Every above-threshold candidate is passed through this small LLM, which
+    # decides whether the cached answer actually answers the new question.
+    # Catches mismatches that cosine alone misses: time period, version, scope,
+    # entity, aspect, audience, etc. See /tmp/eval_judge_100.py for the eval
+    # that picked this model (Gemini 3.1 Flash Lite: 100/100, 0 FP, 0 FN).
+    cache_judge_enabled: bool = True
+    cache_judge_model: str = "google/gemini-3.1-flash-lite"
+    cache_judge_timeout_seconds: float = 3.0
 
     # ── Server-sent events ──────────────────────────────────────────────────
     sse_ping_seconds: int = 10
