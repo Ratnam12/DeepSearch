@@ -179,8 +179,21 @@ async def _run_web_search(query: str) -> tuple[str, list[dict[str, Any]]]:
 
 
 async def _run_scrape_and_index(url: str) -> str:
-    """Scrape *url*, sanitize against prompt injection, chunk, and upsert."""
-    text = await scrape_url(url)
+    """Scrape *url*, sanitize against prompt injection, chunk, and upsert.
+
+    Wrapped in ``asyncio.wait_for`` because ``scrape_url`` launches a fresh
+    Playwright browser per call and neither ``chromium.launch()`` nor
+    ``browser.new_page()`` carry their own timeout. A broken browser
+    (OOM / zombie chrome processes / missing binary) can hang both calls
+    forever, which then strands the agent loop — the chat agent's
+    ``MAX_TOOL_STEPS`` cap can't fire if it never returns from step 1.
+    The cap is generous (45s) so a slow but real page still has room.
+    """
+    try:
+        text = await asyncio.wait_for(scrape_url(url), timeout=45)
+    except asyncio.TimeoutError:
+        logger.warning("scrape_and_index timed out url=%s", url)
+        return f"scrape_and_index timed out for {url} after 45s."
     if not text:
         return f"No content extracted from {url}."
     result = sanitize(url, text)
