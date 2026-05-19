@@ -259,9 +259,16 @@ def _stub_result(
 
 async def _safe_run_web_search(query: str) -> str:
     """Wrapper that catches Serper failures so they show up as a tool
-    error in the model's history rather than crashing the sub-agent."""
+    error in the model's history rather than crashing the sub-agent.
+
+    ``_run_web_search`` now returns ``(text, citations)`` to feed the chat
+    agent's clickable-citations path. Sub-agents build their own source
+    list from scrape/retrieve URLs, so we drop the citations and forward
+    the formatted text alone.
+    """
     try:
-        return await _run_web_search(query)
+        text, _ = await _run_web_search(query)
+        return text
     except Exception as exc:
         logger.exception("web_search failed q=%r", query)
         return f"web_search failed: {exc.__class__.__name__}: {exc}"
