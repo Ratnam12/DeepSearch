@@ -27,6 +27,16 @@ export const maxDuration = 300;
 const NOTIFY_CHANNEL = "research_events";
 const MAX_TICKS_NO_EVENTS = 60; // 60 * 5s = 5 min watchdog when worker is silent
 
+// 4KB SSE comment used as a heartbeat / flush pad. Vercel edge + any
+// intermediate proxy will hold sub-threshold chunks (research events are
+// ~200 bytes each, the old 14-byte ``: keepalive`` was way under most
+// edge flush thresholds) until the response ends. The artifact card
+// then only renders activity after a refresh re-reads from the DB. A
+// 4KB comment is invisible to the SSE parser but big enough to force
+// the flush in a single chunk.
+const HEARTBEAT_PAYLOAD = `: ${" ".repeat(4096)}\n\n`;
+const SMALL_CHUNK_BYTES = 1024;
+
 function sse(part: { id?: number; event?: string; data: unknown }): string {
   const lines: string[] = [];
   if (typeof part.id === "number") lines.push(`id: ${part.id}`);
@@ -89,6 +99,13 @@ export async function GET(
         if (closed) return;
         try {
           controller.enqueue(encoder.encode(chunk));
+          // Trail a 4KB pad behind small chunks so they don't sit in an
+          // intermediate buffer waiting for the threshold. The heartbeat
+          // interval only covers fully-quiet stretches; bursts of small
+          // events still need this.
+          if (chunk.length < SMALL_CHUNK_BYTES) {
+            controller.enqueue(encoder.encode(HEARTBEAT_PAYLOAD));
+          }
         } catch {
           closed = true;
         }
@@ -120,8 +137,14 @@ export async function GET(
       let quietTicks = 0;
       const heartbeat = setInterval(() => {
         if (closed) return;
-        send(`: keepalive\n\n`);
-      }, 15_000);
+        // Use raw enqueue to skip the small-chunk pad inside ``send`` —
+        // the heartbeat payload is already fat enough on its own.
+        try {
+          controller.enqueue(encoder.encode(HEARTBEAT_PAYLOAD));
+        } catch {
+          closed = true;
+        }
+      }, 5_000);
 
       const drain = async (latestRun: RunSnapshot): Promise<boolean> => {
         const events = await listResearchEventsSince({
