@@ -356,13 +356,30 @@ async def _replay_cached_payload(
     yield b"data: [DONE]\n\n"
 
 
+# 4KB SSE comment used as a heartbeat / flush pad. The leading ``: ``
+# makes it a valid comment (the AI SDK SSE parser ignores comments), and
+# the 4KB body is sized to cross Vercel-edge / proxy flush thresholds in
+# a single chunk — the short 14-byte ``: keepalive\n\n`` we used before
+# was under most edge thresholds, so it accumulated in the buffer along
+# with the small text-deltas it was meant to flush. This payload is
+# emitted both during quiet stretches and trailing every small data
+# chunk during active streaming.
+_HEARTBEAT_PAYLOAD: bytes = b": " + (b" " * 4096) + b"\n\n"
+# Data chunks below this size get a heartbeat pad appended to force a
+# flush. Tool-output-available parts are usually well above this and
+# don't need the pad.
+_SMALL_CHUNK_BYTES = 1024
+
+
 async def _stream_with_heartbeat(
     source: AsyncGenerator[bytes, None],
     *,
-    interval_seconds: float = 3.0,
+    interval_seconds: float = 1.0,
 ) -> AsyncGenerator[bytes, None]:
     """Forward *source* chunks, injecting an SSE comment heartbeat when
-    the source is quiet for longer than ``interval_seconds``.
+    the source is quiet for longer than ``interval_seconds``, and
+    appending the same pad after small data chunks so they don't sit in
+    an intermediate buffer waiting for a size threshold.
 
     Background: the chat-route proxy + Vercel runtime + any intermediate
     CDN will happily hold a small SSE chunk in a buffer until either a
@@ -370,12 +387,9 @@ async def _stream_with_heartbeat(
     that means text-delta events (~30 bytes each) emitted slowly during
     the synthesis turn never reach the browser live — the user sees the
     tool-output-available bursts (large, force-flushed), then nothing
-    until refresh shows the persisted answer.
-
-    A periodic ``: keepalive`` SSE comment is invisible to the AI SDK
-    parser (comments are ignored) but forces the intermediate buffers
-    to flush. We pace it conservatively at 3s so it only fires during
-    actual quiet stretches.
+    until refresh shows the persisted answer. A periodic-only heartbeat
+    isn't enough on its own because during active streaming the source
+    is never quiet long enough for the timeout to fire.
     """
     queue: asyncio.Queue[tuple[str, bytes | BaseException | None]] = (
         asyncio.Queue()
@@ -401,10 +415,12 @@ async def _stream_with_heartbeat(
                     queue.get(), timeout=interval_seconds
                 )
             except asyncio.TimeoutError:
-                yield b": keepalive\n\n"
+                yield _HEARTBEAT_PAYLOAD
                 continue
             if kind == DATA and isinstance(payload, bytes):
                 yield payload
+                if len(payload) < _SMALL_CHUNK_BYTES:
+                    yield _HEARTBEAT_PAYLOAD
             elif kind == ERROR and isinstance(payload, BaseException):
                 raise payload
             elif kind == DONE:
